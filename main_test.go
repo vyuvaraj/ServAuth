@@ -205,3 +205,92 @@ func TestServAuthSecurityLockoutAndReset(t *testing.T) {
 		t.Errorf("expected StatusOK on login after reset, got %d", newLoginResp.StatusCode)
 	}
 }
+
+func TestServAuthKeysAndSessions(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/auth/register", handleRegister)
+	mux.HandleFunc("/api/auth/login", handleLogin)
+	mux.HandleFunc("/api/auth/keys", handleKeys)
+	mux.HandleFunc("/api/auth/keys/validate", handleKeysValidate)
+	mux.HandleFunc("/api/auth/sessions/revoke", handleSessionsRevoke)
+
+	testServer := httptest.NewServer(mux)
+	defer testServer.Close()
+
+	// 1. Generate API Key
+	payloadKey := map[string]interface{}{
+		"username": "service-account-alice",
+		"scopes":   []string{"read:metrics", "write:deployments"},
+	}
+	bodyKey, _ := json.Marshal(payloadKey)
+	respKey, err := http.Post(testServer.URL+"/api/auth/keys", "application/json", bytes.NewReader(bodyKey))
+	if err != nil {
+		t.Fatalf("failed API key generation: %v", err)
+	}
+	defer respKey.Body.Close()
+
+	if respKey.StatusCode != http.StatusCreated {
+		t.Fatalf("expected StatusCreated, got %d", respKey.StatusCode)
+	}
+
+	var keyRes struct {
+		Key      string   `json:"key"`
+		Username string   `json:"username"`
+		Scopes   []string `json:"scopes"`
+	}
+	json.NewDecoder(respKey.Body).Decode(&keyRes)
+
+	if keyRes.Key == "" || keyRes.Username != "service-account-alice" {
+		t.Fatalf("invalid generated key: %+v", keyRes)
+	}
+
+	// 2. Validate API Key
+	payloadVal := map[string]string{"key": keyRes.Key}
+	bodyVal, _ := json.Marshal(payloadVal)
+	respVal, _ := http.Post(testServer.URL+"/api/auth/keys/validate", "application/json", bytes.NewReader(bodyVal))
+	defer respVal.Body.Close()
+
+	if respVal.StatusCode != http.StatusOK {
+		t.Fatalf("expected key validation StatusOK, got %d", respVal.StatusCode)
+	}
+
+	var valRes APIKey
+	json.NewDecoder(respVal.Body).Decode(&valRes)
+	if valRes.Username != "service-account-alice" || valRes.Scopes[0] != "read:metrics" {
+		t.Errorf("unexpected scopes validation: %+v", valRes)
+	}
+
+	// 3. Register user and login to create a Session
+	regPayload := RegisterRequest{
+		Username: "sessionuser",
+		Email:    "session@example.com",
+		Password: "password123",
+	}
+	regBody, _ := json.Marshal(regPayload)
+	regResp, _ := http.Post(testServer.URL+"/api/auth/register", "application/json", bytes.NewReader(regBody))
+	regResp.Body.Close()
+
+	loginPayload := LoginRequest{
+		Username: "sessionuser",
+		Password: "password123",
+	}
+	loginBody, _ := json.Marshal(loginPayload)
+	loginResp, _ := http.Post(testServer.URL+"/api/auth/login", "application/json", bytes.NewReader(loginBody))
+	var loginRes LoginResponse
+	json.NewDecoder(loginResp.Body).Decode(&loginRes)
+	loginResp.Body.Close()
+
+	if loginRes.Token == "" {
+		t.Fatalf("expected login token for session tracking")
+	}
+
+	// 4. Revoke Session
+	revPayload := map[string]string{"token": loginRes.Token}
+	revBody, _ := json.Marshal(revPayload)
+	revResp, _ := http.Post(testServer.URL+"/api/auth/sessions/revoke", "application/json", bytes.NewReader(revBody))
+	defer revResp.Body.Close()
+
+	if revResp.StatusCode != http.StatusOK {
+		t.Errorf("expected session revocation StatusOK, got %d", revResp.StatusCode)
+	}
+}

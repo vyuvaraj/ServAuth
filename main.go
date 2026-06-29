@@ -51,10 +51,30 @@ type LoginResponse struct {
 	Username string `json:"username"`
 }
 
+type APIKey struct {
+	Key       string    `json:"key"`
+	Username  string    `json:"username"`
+	Scopes    []string  `json:"scopes"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type Session struct {
+	Token     string    `json:"token"`
+	Username  string    `json:"username"`
+	IP        string    `json:"ip"`
+	UserAgent string    `json:"user_agent"`
+	CreatedAt time.Time `json:"created_at"`
+	Revoked   bool      `json:"revoked"`
+}
+
 var (
-	users   = make(map[string]User) // key: username
-	usersMu sync.RWMutex
-	clients = map[string]string{
+	users      = make(map[string]User) // key: username
+	usersMu    sync.RWMutex
+	apiKeys    = make(map[string]*APIKey) // key: token/key
+	apiKeysMu  sync.RWMutex
+	sessions   = make(map[string]*Session) // key: token
+	sessionsMu sync.RWMutex
+	clients    = map[string]string{
 		"console-client-id": "console-secret-key-9876",
 	}
 )
@@ -90,6 +110,9 @@ func main() {
 	mux.HandleFunc("/api/auth/reset-password/request", handleResetRequest)
 	mux.HandleFunc("/api/auth/reset-password/confirm", handleResetConfirm)
 	mux.HandleFunc("/oauth/token", handleToken)
+	mux.HandleFunc("/api/auth/keys", handleKeys)
+	mux.HandleFunc("/api/auth/keys/validate", handleKeysValidate)
+	mux.HandleFunc("/api/auth/sessions/revoke", handleSessionsRevoke)
 
 	// Wrap in ServShared middleware (auth checks for dashboard endpoints if needed, but signup/login are public)
 	serverHandler := ServShared.AuthMiddleware(mux)
@@ -208,6 +231,17 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	claimsBytes, _ := json.Marshal(claims)
 	token := base64Encode(claimsBytes) // Simple representation
+
+	sessionsMu.Lock()
+	sessions[token] = &Session{
+		Token:     token,
+		Username:  user.Username,
+		IP:        r.RemoteAddr,
+		UserAgent: r.UserAgent(),
+		CreatedAt: time.Now(),
+		Revoked:   false,
+	}
+	sessionsMu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -366,4 +400,103 @@ func handleResetConfirm(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"success","message":"Password updated successfully"}`))
+}
+
+func handleKeys(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Username string   `json:"username"`
+		Scopes   []string `json:"scopes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid payload", http.StatusBadRequest)
+		return
+	}
+
+	// Generate key
+	rawKey := fmt.Sprintf("key-%d-%s", time.Now().UnixNano(), req.Username)
+	keyHash := sha256.Sum256([]byte(rawKey))
+	hexKey := hex.EncodeToString(keyHash[:])
+
+	apiKey := &APIKey{
+		Key:       hexKey,
+		Username:  req.Username,
+		Scopes:    req.Scopes,
+		CreatedAt: time.Now(),
+	}
+
+	apiKeysMu.Lock()
+	apiKeys[hexKey] = apiKey
+	apiKeysMu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"key":      hexKey,
+		"username": req.Username,
+		"scopes":   req.Scopes,
+	})
+}
+
+func handleKeysValidate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Key string `json:"key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid payload", http.StatusBadRequest)
+		return
+	}
+
+	apiKeysMu.RLock()
+	apiKey, exists := apiKeys[req.Key]
+	apiKeysMu.RUnlock()
+
+	if !exists {
+		http.Error(w, "Invalid API key", http.StatusUnauthorized)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(apiKey)
+}
+
+func handleSessionsRevoke(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid payload", http.StatusBadRequest)
+		return
+	}
+
+	sessionsMu.Lock()
+	session, exists := sessions[req.Token]
+	if exists {
+		session.Revoked = true
+	}
+	sessionsMu.Unlock()
+
+	if !exists {
+		http.Error(w, "Session not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"success","message":"Session revoked successfully"}`))
 }
