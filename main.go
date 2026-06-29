@@ -24,6 +24,9 @@ type User struct {
 	FailedAttempts int       `json:"-"`
 	LockedUntil    time.Time `json:"-"`
 	ResetToken     string    `json:"-"`
+	TenantID       string    `json:"tenant_id,omitempty"`
+	MFASecret      string    `json:"-"`
+	MFAEnabled     bool      `json:"mfa_enabled"`
 }
 
 type ResetRequest struct {
@@ -113,6 +116,8 @@ func main() {
 	mux.HandleFunc("/api/auth/keys", handleKeys)
 	mux.HandleFunc("/api/auth/keys/validate", handleKeysValidate)
 	mux.HandleFunc("/api/auth/sessions/revoke", handleSessionsRevoke)
+	mux.HandleFunc("/api/auth/mfa/setup", handleMfaSetup)
+	mux.HandleFunc("/api/auth/mfa/verify", handleMfaVerify)
 
 	// Wrap in ServShared middleware (auth checks for dashboard endpoints if needed, but signup/login are public)
 	serverHandler := ServShared.AuthMiddleware(mux)
@@ -140,11 +145,17 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	userKey := tenantID + ":" + req.Username
+
 	usersMu.Lock()
 	defer usersMu.Unlock()
 
-	if _, exists := users[req.Username]; exists {
-		http.Error(w, "Username already exists", http.StatusConflict)
+	if _, exists := users[userKey]; exists {
+		http.Error(w, "Username already exists in this tenant", http.StatusConflict)
 		return
 	}
 
@@ -157,9 +168,10 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		Password:  hashedPassword,
 		Salt:      salt,
 		CreatedAt: time.Now(),
+		TenantID:  tenantID,
 	}
 
-	users[req.Username] = newUser
+	users[userKey] = newUser
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -178,8 +190,14 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	userKey := tenantID + ":" + req.Username
+
 	usersMu.Lock()
-	user, exists := users[req.Username]
+	user, exists := users[userKey]
 	if exists && !user.LockedUntil.IsZero() && user.LockedUntil.After(time.Now()) {
 		usersMu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
@@ -197,12 +215,12 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	hashed := hashPassword(req.Password, user.Salt)
 	if hashed != user.Password {
 		usersMu.Lock()
-		u := users[req.Username]
+		u := users[userKey]
 		u.FailedAttempts++
 		if u.FailedAttempts >= 3 {
 			u.LockedUntil = time.Now().Add(5 * time.Minute)
 		}
-		users[req.Username] = u
+		users[userKey] = u
 		usersMu.Unlock()
 
 		http.Error(w, "Invalid username or password", http.StatusUnauthorized)
@@ -211,10 +229,10 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Reset attempts on success
 	usersMu.Lock()
-	u := users[req.Username]
+	u := users[userKey]
 	u.FailedAttempts = 0
 	u.LockedUntil = time.Time{}
-	users[req.Username] = u
+	users[userKey] = u
 	usersMu.Unlock()
 
 	// Generate JWT using ServShared Secret or default test key
@@ -499,4 +517,92 @@ func handleSessionsRevoke(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"success","message":"Session revoked successfully"}`))
+}
+
+func handleMfaSetup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Username string `json:"username"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid payload", http.StatusBadRequest)
+		return
+	}
+
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	userKey := tenantID + ":" + req.Username
+
+	usersMu.Lock()
+	user, exists := users[userKey]
+	if !exists {
+		usersMu.Unlock()
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	mockSecret := "secret-totp-key-for-" + req.Username
+	user.MFASecret = mockSecret
+	users[userKey] = user
+	usersMu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"secret":     mockSecret,
+		"issuer":     "Servverse",
+		"account":    req.Username,
+		"qr_mock_url": "https://api.qrserver.com/v1/create-qr-code/?data=otpauth://totp/Servverse:" + req.Username,
+	})
+}
+
+func handleMfaVerify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Username string `json:"username"`
+		Code     string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid payload", http.StatusBadRequest)
+		return
+	}
+
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	userKey := tenantID + ":" + req.Username
+
+	usersMu.Lock()
+	user, exists := users[userKey]
+	if !exists {
+		usersMu.Unlock()
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	// Simple mock verification: any 6-digit matching "123456" succeeds
+	if req.Code == "123456" {
+		user.MFAEnabled = true
+		users[userKey] = user
+		usersMu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"success","message":"MFA verified and enabled successfully"}`))
+		return
+	}
+
+	usersMu.Unlock()
+	http.Error(w, "Invalid verification code", http.StatusUnauthorized)
 }

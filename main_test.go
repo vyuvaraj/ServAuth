@@ -294,3 +294,71 @@ func TestServAuthKeysAndSessions(t *testing.T) {
 		t.Errorf("expected session revocation StatusOK, got %d", revResp.StatusCode)
 	}
 }
+
+func TestServAuthTenancyAndMfa(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/auth/register", handleRegister)
+	mux.HandleFunc("/api/auth/login", handleLogin)
+	mux.HandleFunc("/api/auth/mfa/setup", handleMfaSetup)
+	mux.HandleFunc("/api/auth/mfa/verify", handleMfaVerify)
+
+	testServer := httptest.NewServer(mux)
+	defer testServer.Close()
+
+	// 1. Register same username under two different tenants -> both should succeed!
+	regPayload := RegisterRequest{
+		Username: "multitenant-bob",
+		Email:    "bob@example.com",
+		Password: "password123",
+	}
+	body, _ := json.Marshal(regPayload)
+
+	req1, _ := http.NewRequest(http.MethodPost, testServer.URL+"/api/auth/register", bytes.NewReader(body))
+	req1.Header.Set("X-Tenant-ID", "tenant-alpha")
+	req1.Header.Set("Content-Type", "application/json")
+	resp1, err := http.DefaultClient.Do(req1)
+	if err != nil || resp1.StatusCode != http.StatusCreated {
+		t.Fatalf("failed to register Bob in tenant-alpha: %v", err)
+	}
+	resp1.Body.Close()
+
+	req2, _ := http.NewRequest(http.MethodPost, testServer.URL+"/api/auth/register", bytes.NewReader(body))
+	req2.Header.Set("X-Tenant-ID", "tenant-beta")
+	req2.Header.Set("Content-Type", "application/json")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil || resp2.StatusCode != http.StatusCreated {
+		t.Fatalf("failed to register Bob in tenant-beta: %v", err)
+	}
+	resp2.Body.Close()
+
+	// 2. Setup MFA
+	mfaReqBody, _ := json.Marshal(map[string]string{"username": "multitenant-bob"})
+	reqMfa, _ := http.NewRequest(http.MethodPost, testServer.URL+"/api/auth/mfa/setup", bytes.NewReader(mfaReqBody))
+	reqMfa.Header.Set("X-Tenant-ID", "tenant-alpha")
+	reqMfa.Header.Set("Content-Type", "application/json")
+	respMfa, err := http.DefaultClient.Do(reqMfa)
+	if err != nil || respMfa.StatusCode != http.StatusOK {
+		t.Fatalf("failed to setup MFA: %v", err)
+	}
+	var setupRes struct{ Secret string }
+	json.NewDecoder(respMfa.Body).Decode(&setupRes)
+	respMfa.Body.Close()
+
+	if setupRes.Secret == "" {
+		t.Fatalf("expected valid MFA setup secret")
+	}
+
+	// 3. Verify MFA
+	verifyReqBody, _ := json.Marshal(map[string]string{
+		"username": "multitenant-bob",
+		"code":     "123456",
+	})
+	reqVerify, _ := http.NewRequest(http.MethodPost, testServer.URL+"/api/auth/mfa/verify", bytes.NewReader(verifyReqBody))
+	reqVerify.Header.Set("X-Tenant-ID", "tenant-alpha")
+	reqVerify.Header.Set("Content-Type", "application/json")
+	respVerify, err := http.DefaultClient.Do(reqVerify)
+	if err != nil || respVerify.StatusCode != http.StatusOK {
+		t.Fatalf("failed to verify MFA: %v", err)
+	}
+	respVerify.Body.Close()
+}
