@@ -8,7 +8,7 @@ This roadmap outlines the planned development phases for the ServAuth identity p
 - [x] **User registration & login** — Email/password signup and login endpoints. [June 29, 2026]
 - [x] **OAuth2/OIDC provider** — Authorization code flow and client credential token issuance. [June 29, 2026]
 - [x] **Password reset & account lockout** — Recovery flows and lockout gates. [June 29, 2026]
-- [ ] **Serv-lang integration** — `auth.*` builtin helpers.
+- [x] **Serv-lang integration** — `auth.*` builtin helpers. [June 29, 2026]
 
 ## Phase 2: Advanced Directory Capabilities
 - [ ] **Multi-tenant directories** — Isolated pools.
