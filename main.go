@@ -200,6 +200,86 @@ func verifyTOTP(secret string, code string) bool {
 	return false
 }
 
+var storeClient *ServShared.StoreClient
+
+func initStore() {
+	storeClient = ServShared.NewStoreClient()
+	loadStateFromStore()
+}
+
+func loadStateFromStore() {
+	// Load users
+	if data, err := storeClient.Get("serv-auth-users", "users.json"); err == nil {
+		usersMu.Lock()
+		var loadedUsers map[string]User
+		if json.Unmarshal(data, &loadedUsers) == nil {
+			users = loadedUsers
+			log.Printf("[PERSISTENCE] Loaded %d users from ServStore", len(users))
+		}
+		usersMu.Unlock()
+	} else {
+		log.Printf("[PERSISTENCE] Failed to load users (will use default/empty): %v", err)
+	}
+
+	// Load API keys
+	if data, err := storeClient.Get("serv-auth-users", "apikeys.json"); err == nil {
+		apiKeysMu.Lock()
+		var loadedKeys map[string]*APIKey
+		if json.Unmarshal(data, &loadedKeys) == nil {
+			apiKeys = loadedKeys
+			log.Printf("[PERSISTENCE] Loaded %d API keys from ServStore", len(apiKeys))
+		}
+		apiKeysMu.Unlock()
+	}
+
+	// Load sessions
+	if data, err := storeClient.Get("serv-auth-users", "sessions.json"); err == nil {
+		sessionsMu.Lock()
+		var loadedSessions map[string]*Session
+		if json.Unmarshal(data, &loadedSessions) == nil {
+			sessions = loadedSessions
+			log.Printf("[PERSISTENCE] Loaded %d sessions from ServStore", len(sessions))
+		}
+		sessionsMu.Unlock()
+	}
+}
+
+func saveUsersToStore() {
+	if storeClient == nil {
+		return
+	}
+	usersMu.RLock()
+	data, err := json.Marshal(users)
+	usersMu.RUnlock()
+	if err == nil {
+		_ = storeClient.Put("serv-auth-users", "users.json", data)
+	}
+}
+
+func saveAPIKeysToStore() {
+	if storeClient == nil {
+		return
+	}
+	apiKeysMu.RLock()
+	data, err := json.Marshal(apiKeys)
+	apiKeysMu.RUnlock()
+	if err == nil {
+		_ = storeClient.Put("serv-auth-users", "apikeys.json", data)
+	}
+}
+
+func saveSessionsToStore() {
+	if storeClient == nil {
+		return
+	}
+	sessionsMu.RLock()
+	data, err := json.Marshal(sessions)
+	sessionsMu.RUnlock()
+	if err == nil {
+		_ = storeClient.Put("serv-auth-users", "sessions.json", data)
+	}
+}
+
 func main() {
 	portStr := flag.String("port", "8098", "ServAuth server port")
 	flag.Parse()
@@ -208,6 +288,8 @@ func main() {
 	if port == "" {
 		port = *portStr
 	}
+
+	initStore()
 
 	mux := http.NewServeMux()
 
@@ -270,15 +352,15 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	userKey := tenantID + ":" + req.Username
 
 	usersMu.Lock()
-	defer usersMu.Unlock()
-
 	if _, exists := users[userKey]; exists {
+		usersMu.Unlock()
 		http.Error(w, "Username already exists in this tenant", http.StatusConflict)
 		return
 	}
 
 	saltBytes := make([]byte, 16)
 	if _, err := io.ReadFull(rand.Reader, saltBytes); err != nil {
+		usersMu.Unlock()
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -286,6 +368,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	hashedPassword, err := hashPassword(req.Password)
 	if err != nil {
+		usersMu.Unlock()
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -300,6 +383,9 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	users[userKey] = newUser
+	usersMu.Unlock()
+
+	saveUsersToStore()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -349,6 +435,7 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		users[userKey] = u
 		usersMu.Unlock()
+		saveUsersToStore()
 
 		http.Error(w, "Invalid username or password", http.StatusUnauthorized)
 		return
@@ -361,6 +448,7 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	u.LockedUntil = time.Time{}
 	users[userKey] = u
 	usersMu.Unlock()
+	saveUsersToStore()
 
 	// Generate JWT using ServShared Secret or default test key
 	secret := os.Getenv("SERV_JWT_SECRET")
@@ -384,6 +472,7 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		Revoked:   false,
 	}
 	sessionsMu.Unlock()
+	saveSessionsToStore()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -482,8 +571,6 @@ func handleResetRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	usersMu.Lock()
-	defer usersMu.Unlock()
-
 	found := false
 	var username string
 	for name, user := range users {
@@ -495,6 +582,7 @@ func handleResetRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !found {
+		usersMu.Unlock()
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"success","message":"Reset link sent if email exists"}`))
 		return
@@ -504,6 +592,8 @@ func handleResetRequest(w http.ResponseWriter, r *http.Request) {
 	u := users[username]
 	u.ResetToken = token
 	users[username] = u
+	usersMu.Unlock()
+	saveUsersToStore()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -523,8 +613,6 @@ func handleResetConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	usersMu.Lock()
-	defer usersMu.Unlock()
-
 	found := false
 	var username string
 	for name, user := range users {
@@ -536,6 +624,7 @@ func handleResetConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !found {
+		usersMu.Unlock()
 		http.Error(w, "Invalid or expired token", http.StatusBadRequest)
 		return
 	}
@@ -543,6 +632,7 @@ func handleResetConfirm(w http.ResponseWriter, r *http.Request) {
 	u := users[username]
 	hashed, err := hashPassword(req.Password)
 	if err != nil {
+		usersMu.Unlock()
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -551,6 +641,8 @@ func handleResetConfirm(w http.ResponseWriter, r *http.Request) {
 	u.FailedAttempts = 0
 	u.LockedUntil = time.Time{}
 	users[username] = u
+	usersMu.Unlock()
+	saveUsersToStore()
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"success","message":"Password updated successfully"}`))
@@ -586,6 +678,7 @@ func handleKeys(w http.ResponseWriter, r *http.Request) {
 	apiKeysMu.Lock()
 	apiKeys[hexKey] = apiKey
 	apiKeysMu.Unlock()
+	saveAPIKeysToStore()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -648,6 +741,7 @@ func handleSessionsRevoke(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	sessionsMu.Unlock()
+	saveSessionsToStore()
 
 	if !exists {
 		http.Error(w, "Session not found", http.StatusNotFound)
@@ -691,6 +785,7 @@ func handleMfaSetup(w http.ResponseWriter, r *http.Request) {
 	user.MFASecret = mockSecret
 	users[userKey] = user
 	usersMu.Unlock()
+	saveUsersToStore()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -736,6 +831,7 @@ func handleMfaVerify(w http.ResponseWriter, r *http.Request) {
 		user.MFAEnabled = true
 		users[userKey] = user
 		usersMu.Unlock()
+		saveUsersToStore()
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -794,8 +890,11 @@ func handleSocialCallback(w http.ResponseWriter, r *http.Request) {
 			Salt:     "salt-social",
 			Password: "hash-social",
 		}
+		usersMu.Unlock()
+		saveUsersToStore()
+	} else {
+		usersMu.Unlock()
 	}
-	usersMu.Unlock()
 
 	secret := os.Getenv("SERV_JWT_SECRET")
 	if secret == "" {
