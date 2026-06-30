@@ -160,20 +160,39 @@ func isSessionExpired(s *Session) bool {
 	return time.Since(s.CreatedAt) > 24*time.Hour
 }
 
-// getKMSKey retrieves or defaults the key for AES-GCM encryption
-func getKMSKey() []byte {
-	secret := os.Getenv("SERV_KMS_SECRET")
+var (
+	kmsKeys = map[string]string{
+		"v1": "default-kms-secret-32-bytes-long!",
+		"v2": "rotated-kms-secret-32-bytes-long!",
+	}
+	latestKMSKeyVersion = "v2"
+)
+
+func getKMSKeyForVersion(version string) []byte {
+	envKey := "SERV_KMS_SECRET_" + strings.ToUpper(version)
+	secret := os.Getenv(envKey)
 	if secret == "" {
-		secret = "default-kms-secret-32-bytes-long!"
+		if val, ok := kmsKeys[version]; ok {
+			secret = val
+		} else {
+			secret = os.Getenv("SERV_KMS_SECRET")
+			if secret == "" {
+				secret = "default-kms-secret-32-bytes-long!"
+			}
+		}
 	}
 	key := make([]byte, 32)
 	copy(key, []byte(secret))
 	return key
 }
 
-// encryptAES encrypts plaintext using AES-GCM
+// encryptAES encrypts plaintext using AES-GCM with versioning
 func encryptAES(plaintext string) (string, error) {
-	key := getKMSKey()
+	version := os.Getenv("SERV_KMS_SECRET_LATEST_VERSION")
+	if version == "" {
+		version = latestKMSKeyVersion
+	}
+	key := getKMSKeyForVersion(version)
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return "", err
@@ -187,12 +206,24 @@ func encryptAES(plaintext string) (string, error) {
 		return "", err
 	}
 	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
-	return hex.EncodeToString(ciphertext), nil
+	return version + ":" + hex.EncodeToString(ciphertext), nil
 }
 
-// decryptAES decrypts ciphertext using AES-GCM
-func decryptAES(hexCiphertext string) (string, error) {
-	key := getKMSKey()
+// decryptAES decrypts versioned ciphertext using AES-GCM
+func decryptAES(prefixedCiphertext string) (string, error) {
+	parts := strings.SplitN(prefixedCiphertext, ":", 2)
+	var version string
+	var hexCiphertext string
+	if len(parts) == 2 {
+		version = parts[0]
+		hexCiphertext = parts[1]
+	} else {
+		// Legacy unversioned format fallback
+		version = "v1"
+		hexCiphertext = prefixedCiphertext
+	}
+
+	key := getKMSKeyForVersion(version)
 	ciphertext, err := hex.DecodeString(hexCiphertext)
 	if err != nil {
 		return "", err
@@ -342,6 +373,7 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
 	})
+	mux.HandleFunc("/api/version", ServShared.VersionHandler("servauth", "1.0.0"))
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
