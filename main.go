@@ -203,84 +203,69 @@ func verifyTOTP(secret string, code string) bool {
 	return false
 }
 
-var storeClient *ServShared.StoreClient
+var userStore UserStore
 
 func initStore() {
-	storeClient = ServShared.NewStoreClient()
+	client := ServShared.NewStoreClient()
+	userStore = NewServStoreUserStore(client)
 	loadStateFromStore()
 }
 
 func loadStateFromStore() {
-	// Load users
-	if data, err := storeClient.Get("serv-auth-users", "users.json"); err == nil {
+	if u, err := userStore.LoadUsers(); err == nil {
 		usersMu.Lock()
-		var loadedUsers map[string]User
-		if json.Unmarshal(data, &loadedUsers) == nil {
-			users = loadedUsers
-			log.Printf("[PERSISTENCE] Loaded %d users from ServStore", len(users))
-		}
+		users = u
 		usersMu.Unlock()
-	} else {
-		log.Printf("[PERSISTENCE] Failed to load users (will use default/empty): %v", err)
 	}
-
-	// Load API keys
-	if data, err := storeClient.Get("serv-auth-users", "apikeys.json"); err == nil {
+	if k, err := userStore.LoadKeys(); err == nil {
 		apiKeysMu.Lock()
-		var loadedKeys map[string]*APIKey
-		if json.Unmarshal(data, &loadedKeys) == nil {
-			apiKeys = loadedKeys
-			log.Printf("[PERSISTENCE] Loaded %d API keys from ServStore", len(apiKeys))
-		}
+		apiKeys = k
 		apiKeysMu.Unlock()
 	}
-
-	// Load sessions
-	if data, err := storeClient.Get("serv-auth-users", "sessions.json"); err == nil {
+	if s, err := userStore.LoadSessions(); err == nil {
 		sessionsMu.Lock()
-		var loadedSessions map[string]*Session
-		if json.Unmarshal(data, &loadedSessions) == nil {
-			sessions = loadedSessions
-			log.Printf("[PERSISTENCE] Loaded %d sessions from ServStore", len(sessions))
-		}
+		sessions = s
 		sessionsMu.Unlock()
 	}
 }
 
 func saveUsersToStore() {
-	if storeClient == nil {
+	if userStore == nil {
 		return
 	}
 	usersMu.RLock()
-	data, err := json.Marshal(users)
-	usersMu.RUnlock()
-	if err == nil {
-		_ = storeClient.Put("serv-auth-users", "users.json", data)
+	copied := make(map[string]User)
+	for k, v := range users {
+		copied[k] = v
 	}
+	usersMu.RUnlock()
+	_ = userStore.SaveUsers(copied)
 }
 
 func saveAPIKeysToStore() {
-	if storeClient == nil {
+	if userStore == nil {
 		return
 	}
 	apiKeysMu.RLock()
-	data, err := json.Marshal(apiKeys)
-	apiKeysMu.RUnlock()
-	if err == nil {
-		_ = storeClient.Put("serv-auth-users", "apikeys.json", data)
+	copied := make(map[string]*APIKey)
+	for k, v := range apiKeys {
+		copied[k] = v
 	}
+	apiKeysMu.RUnlock()
+	_ = userStore.SaveKeys(copied)
 }
 
 func saveSessionsToStore() {
-	if storeClient == nil {
+	if userStore == nil {
 		return
 	}
 	sessionsMu.RLock()
-	data, err := json.Marshal(sessions)
-	sessionsMu.RUnlock()
-	if err == nil {
-		_ = storeClient.Put("serv-auth-users", "sessions.json", data)
+	copied := make(map[string]*Session)
+	for k, v := range sessions {
+		copied[k] = v
 	}
+	sessionsMu.RUnlock()
+	_ = userStore.SaveSessions(copied)
 }
 
 func main() {
