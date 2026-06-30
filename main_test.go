@@ -689,3 +689,32 @@ func TestTableDrivenKeyValidation(t *testing.T) {
 	}
 }
 
+func BenchmarkAPIKeyHashing(b *testing.B) {
+	key := "test-api-key-12345-sec"
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		h := sha256.Sum256([]byte(key))
+		_ = h
+	}
+}
+
+func BenchmarkAPIKeyValidation(b *testing.B) {
+	apiKeysMu.Lock()
+	testHash := fmt.Sprintf("%x", sha256.Sum256([]byte("valid-key-id")))
+	apiKeys[testHash] = &APIKey{
+		Key:       "valid-key-id",
+		Username:  "test-user",
+		CreatedAt: time.Now(),
+	}
+	apiKeysMu.Unlock()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := "valid-key-id"
+		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(key)))
+		apiKeysMu.RLock()
+		_, _ = apiKeys[hash]
+		apiKeysMu.RUnlock()
+	}
+}
+
