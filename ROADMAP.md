@@ -24,3 +24,6 @@ This roadmap outlines the planned development phases for the ServAuth identity p
 - [x] **Interface Abstractions & Decoupled Storage** — Extract storage access behind `UserStore` interface for mockability. [June 30, 2026]
 - [x] **Structured Logging & OTel Tracing** — Add TraceMiddleware for tracing context propagation and JSON log format. [June 30, 2026]
 - [x] **SIGTERM Graceful Shutdown** — Register listener to shut down HTTP listener cleanly with a 5-second timeout. [June 30, 2026]
+
+## Phase 4: Architectural Depth (Pending)
+- [ ] **Secrets Envelope Key Rotation** — Secret KMS rotation schedule & API key hashing (SEC.8)
