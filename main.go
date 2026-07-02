@@ -4,13 +4,10 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -29,109 +26,18 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/vyuvaraj/ServShared"
 	"golang.org/x/crypto/bcrypt"
+
+	"servauth/pkg/mfa"
+	"servauth/pkg/oauth"
+	"servauth/pkg/store"
 )
 
-type User struct {
-	Username       string    `json:"username"`
-	Email          string    `json:"email"`
-	Password       string    `json:"-"`
-	Salt           string    `json:"-"`
-	CreatedAt      time.Time `json:"created_at"`
-	FailedAttempts int       `json:"-"`
-	LockedUntil    time.Time `json:"-"`
-	ResetToken     string    `json:"-"`
-	TenantID       string    `json:"tenant_id,omitempty"`
-	MFASecret      string    `json:"-"`
-	MFAEnabled     bool      `json:"mfa_enabled"`
-}
-
-type ResetRequest struct {
-	Email string `json:"email"`
-}
-
-type ResetConfirm struct {
-	Token    string `json:"token"`
-	Password string `json:"password"`
-}
-
-type RegisterRequest struct {
-	Username string `json:"username"`
-	Email    string `json:"email"`
-	Password string `json:"password"`
-}
-
-type LoginRequest struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-}
-
-func (r *ResetRequest) Validate() error {
-	if r.Email == "" || !strings.Contains(r.Email, "@") {
-		return fmt.Errorf("invalid email address")
-	}
-	return nil
-}
-
-func (r *ResetConfirm) Validate() error {
-	if r.Token == "" {
-		return fmt.Errorf("token cannot be empty")
-	}
-	if len(r.Password) < 8 {
-		return fmt.Errorf("password must be at least 8 characters")
-	}
-	return nil
-}
-
-func (r *RegisterRequest) Validate() error {
-	if r.Username == "" {
-		return fmt.Errorf("username cannot be empty")
-	}
-	if len(r.Password) < 8 {
-		return fmt.Errorf("password must be at least 8 characters")
-	}
-	if r.Email == "" || !strings.Contains(r.Email, "@") {
-		return fmt.Errorf("invalid email address")
-	}
-	return nil
-}
-
-func (r *LoginRequest) Validate() error {
-	if r.Username == "" {
-		return fmt.Errorf("username cannot be empty")
-	}
-	if r.Password == "" {
-		return fmt.Errorf("password cannot be empty")
-	}
-	return nil
-}
-
-type LoginResponse struct {
-	Token    string `json:"token"`
-	Username string `json:"username"`
-}
-
-type APIKey struct {
-	Key       string    `json:"key"`
-	Username  string    `json:"username"`
-	Scopes    []string  `json:"scopes"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-type Session struct {
-	Token     string    `json:"token"`
-	Username  string    `json:"username"`
-	IP        string    `json:"ip"`
-	UserAgent string    `json:"user_agent"`
-	CreatedAt time.Time `json:"created_at"`
-	Revoked   bool      `json:"revoked"`
-}
-
 var (
-	users      = make(map[string]User) // key: username
+	users      = make(map[string]store.User) // key: username
 	usersMu    sync.RWMutex
-	apiKeys    = make(map[string]*APIKey) // key: token/key
+	apiKeys    = make(map[string]*store.APIKey) // key: token/key
 	apiKeysMu  sync.RWMutex
-	sessions   = make(map[string]*Session) // key: token
+	sessions   = make(map[string]*store.Session) // key: token
 	sessionsMu sync.RWMutex
 	clients    = map[string]string{
 		"console-client-id": "console-secret-key-9876",
@@ -166,7 +72,7 @@ func verifyPassword(password, hash string) bool {
 }
 
 // isSessionExpired checks if a session has expired (TTL of 24 hours)
-func isSessionExpired(s *Session) bool {
+func isSessionExpired(s *store.Session) bool {
 	return time.Since(s.CreatedAt) > 24*time.Hour
 }
 
@@ -315,46 +221,11 @@ func decryptWithKey(ciphertext []byte, key []byte) (string, error) {
 	return string(plaintext), nil
 }
 
-// verifyTOTP validates an RFC 6238 time-based one-time password
-func verifyTOTP(secret string, code string) bool {
-	var expectedCode int
-	if _, err := fmt.Sscanf(code, "%d", &expectedCode); err != nil {
-		return false
-	}
-
-	currentTime := time.Now().Unix()
-	step := int64(30)
-	key := []byte(secret)
-
-	// Allow 1 step window for clock drift
-	for i := -1; i <= 1; i++ {
-		counter := (currentTime / step) + int64(i)
-		buf := make([]byte, 8)
-		binary.BigEndian.PutUint64(buf, uint64(counter))
-
-		mac := hmac.New(sha1.New, key)
-		mac.Write(buf)
-		hs := mac.Sum(nil)
-
-		offset := hs[len(hs)-1] & 0x0f
-		binCode := int(hs[offset]&0x7f)<<24 |
-			int(hs[offset+1]&0xff)<<16 |
-			int(hs[offset+2]&0xff)<<8 |
-			int(hs[offset+3]&0xff)
-
-		otp := binCode % 1000000
-		if otp == expectedCode {
-			return true
-		}
-	}
-	return false
-}
-
-var userStore UserStore
+var userStore store.UserStore
 
 func initStore() {
 	client := ServShared.NewStoreClient()
-	userStore = NewServStoreUserStore(client)
+	userStore = store.NewServStoreUserStore(client)
 	loadStateFromStore()
 }
 
@@ -381,7 +252,7 @@ func saveUsersToStore() {
 		return
 	}
 	usersMu.RLock()
-	copied := make(map[string]User)
+	copied := make(map[string]store.User)
 	for k, v := range users {
 		copied[k] = v
 	}
@@ -394,7 +265,7 @@ func saveAPIKeysToStore() {
 		return
 	}
 	apiKeysMu.RLock()
-	copied := make(map[string]*APIKey)
+	copied := make(map[string]*store.APIKey)
 	for k, v := range apiKeys {
 		copied[k] = v
 	}
@@ -407,7 +278,7 @@ func saveSessionsToStore() {
 		return
 	}
 	sessionsMu.RLock()
-	copied := make(map[string]*Session)
+	copied := make(map[string]*store.Session)
 	for k, v := range sessions {
 		copied[k] = v
 	}
@@ -512,7 +383,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req RegisterRequest
+	var req store.RegisterRequest
 	if !ServShared.DecodeAndValidateJSON(w, r, &req) {
 		return
 	}
@@ -545,7 +416,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newUser := User{
+	newUser := store.User{
 		Username:  req.Username,
 		Email:     req.Email,
 		Password:  hashedPassword,
@@ -571,7 +442,7 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req LoginRequest
+	var req store.LoginRequest
 	if !ServShared.DecodeAndValidateJSON(w, r, &req) {
 		return
 	}
@@ -641,7 +512,7 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sessionsMu.Lock()
-	sessions[token] = &Session{
+	sessions[token] = &store.Session{
 		Token:     token,
 		Username:  user.Username,
 		IP:        r.RemoteAddr,
@@ -655,7 +526,7 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(LoginResponse{
+	json.NewEncoder(w).Encode(store.LoginResponse{
 		Token:    token,
 		Username: user.Username,
 	})
@@ -701,8 +572,7 @@ func handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	expectedSecret, ok := clients[clientID]
-	if !ok || expectedSecret != clientSecret {
+	if !oauth.ValidateClient(clientID, clientSecret, clients) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		w.Write([]byte(`{"error":"invalid_client"}`))
@@ -751,7 +621,7 @@ func handleResetRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req ResetRequest
+	var req store.ResetRequest
 	if !ServShared.DecodeAndValidateJSON(w, r, &req) {
 		return
 	}
@@ -792,7 +662,7 @@ func handleResetConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req ResetConfirm
+	var req store.ResetConfirm
 	if !ServShared.DecodeAndValidateJSON(w, r, &req) {
 		return
 	}
@@ -857,7 +727,7 @@ func handleKeys(w http.ResponseWriter, r *http.Request) {
 	hashedBytes := sha256.Sum256([]byte(hexKey))
 	hashedKey := hex.EncodeToString(hashedBytes[:])
 
-	apiKey := &APIKey{
+	apiKey := &store.APIKey{
 		Key:       hashedKey,
 		Username:  req.Username,
 		Scopes:    req.Scopes,
@@ -937,7 +807,7 @@ func handleSessionsRevoke(w http.ResponseWriter, r *http.Request) {
 	saveSessionsToStore()
 
 	if !exists {
-		http.Error(w, "Session not found", http.StatusNotFound)
+		http.Error(w, "store.Session not found", http.StatusNotFound)
 		return
 	}
 
@@ -945,7 +815,7 @@ func handleSessionsRevoke(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"success","message":"Session revoked successfully"}`))
+	w.Write([]byte(`{"status":"success","message":"store.Session revoked successfully"}`))
 }
 
 func handleMfaSetup(w http.ResponseWriter, r *http.Request) {
@@ -972,7 +842,7 @@ func handleMfaSetup(w http.ResponseWriter, r *http.Request) {
 	user, exists := users[userKey]
 	if !exists {
 		usersMu.Unlock()
-		http.Error(w, "User not found", http.StatusNotFound)
+		http.Error(w, "store.User not found", http.StatusNotFound)
 		return
 	}
 
@@ -1017,12 +887,12 @@ func handleMfaVerify(w http.ResponseWriter, r *http.Request) {
 	user, exists := users[userKey]
 	if !exists {
 		usersMu.Unlock()
-		http.Error(w, "User not found", http.StatusNotFound)
+		http.Error(w, "store.User not found", http.StatusNotFound)
 		return
 	}
 
 	// Verify the real TOTP code
-	if verifyTOTP(user.MFASecret, req.Code) {
+	if mfa.VerifyTOTP(user.MFASecret, req.Code) {
 		user.MFAEnabled = true
 		users[userKey] = user
 		usersMu.Unlock()
@@ -1081,7 +951,7 @@ func handleSocialCallback(w http.ResponseWriter, r *http.Request) {
 	usersMu.Lock()
 	_, exists := users[userKey]
 	if !exists {
-		users[userKey] = User{
+		users[userKey] = store.User{
 			Username: username,
 			Salt:     "salt-social",
 			Password: "hash-social",
@@ -1179,7 +1049,7 @@ func handleUsersRoles(w http.ResponseWriter, r *http.Request) {
 	usersMu.Unlock()
 
 	if !exists {
-		http.Error(w, "User not found", http.StatusNotFound)
+		http.Error(w, "store.User not found", http.StatusNotFound)
 		return
 	}
 
@@ -1199,7 +1069,7 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sessionsMu.RLock()
-	var list []*Session
+	var list []*store.Session
 	for _, s := range sessions {
 		if !s.Revoked && !isSessionExpired(s) {
 			list = append(list, s)

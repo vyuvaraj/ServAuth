@@ -14,6 +14,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"servauth/pkg/mfa"
+	"servauth/pkg/store"
 )
 
 func generateTOTP(secret string) string {
@@ -40,15 +43,15 @@ func generateTOTP(secret string) string {
 
 func setupTest() {
 	usersMu.Lock()
-	users = make(map[string]User)
+	users = make(map[string]store.User)
 	usersMu.Unlock()
 
 	apiKeysMu.Lock()
-	apiKeys = make(map[string]*APIKey)
+	apiKeys = make(map[string]*store.APIKey)
 	apiKeysMu.Unlock()
 
 	sessionsMu.Lock()
-	sessions = make(map[string]*Session)
+	sessions = make(map[string]*store.Session)
 	sessionsMu.Unlock()
 }
 
@@ -61,8 +64,8 @@ func TestServAuthWorkflow(t *testing.T) {
 	testServer := httptest.NewServer(mux)
 	defer testServer.Close()
 
-	// 1. Register User
-	registerPayload := RegisterRequest{
+	// 1. Register store.User
+	registerPayload := store.RegisterRequest{
 		Username: "testuser",
 		Email:    "test@example.com",
 		Password: "mysecurepassword",
@@ -78,7 +81,7 @@ func TestServAuthWorkflow(t *testing.T) {
 		t.Fatalf("expected StatusCreated, got %d", resp.StatusCode)
 	}
 
-	var user User
+	var user store.User
 	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
 		t.Fatalf("failed to decode registered user response: %v", err)
 	}
@@ -87,8 +90,8 @@ func TestServAuthWorkflow(t *testing.T) {
 		t.Errorf("expected username and email to match register payload, got %+v", user)
 	}
 
-	// 2. Login User
-	loginPayload := LoginRequest{
+	// 2. Login store.User
+	loginPayload := store.LoginRequest{
 		Username: "testuser",
 		Password: "mysecurepassword",
 	}
@@ -103,7 +106,7 @@ func TestServAuthWorkflow(t *testing.T) {
 		t.Fatalf("expected StatusOK on login, got %d", loginResp.StatusCode)
 	}
 
-	var loginResponse LoginResponse
+	var loginResponse store.LoginResponse
 	if err := json.NewDecoder(loginResp.Body).Decode(&loginResponse); err != nil {
 		t.Fatalf("failed to decode login response: %v", err)
 	}
@@ -164,7 +167,7 @@ func TestServAuthSecurityLockoutAndReset(t *testing.T) {
 	defer testServer.Close()
 
 	// 1. Register a user
-	regPayload := RegisterRequest{
+	regPayload := store.RegisterRequest{
 		Username: "lockuser",
 		Email:    "lock@example.com",
 		Password: "correctpassword",
@@ -174,7 +177,7 @@ func TestServAuthSecurityLockoutAndReset(t *testing.T) {
 	resp.Body.Close()
 
 	// 2. Perform 3 failed logins to trigger lockout
-	loginPayload := LoginRequest{
+	loginPayload := store.LoginRequest{
 		Username: "lockuser",
 		Password: "wrongpassword",
 	}
@@ -186,7 +189,7 @@ func TestServAuthSecurityLockoutAndReset(t *testing.T) {
 	}
 
 	// 4th login attempt (even with CORRECT password) should fail with StatusForbidden (lockout)
-	successPayload := LoginRequest{
+	successPayload := store.LoginRequest{
 		Username: "lockuser",
 		Password: "correctpassword",
 	}
@@ -202,7 +205,7 @@ func TestServAuthSecurityLockoutAndReset(t *testing.T) {
 	}
 
 	// 3. Request Password Reset
-	resetReq := ResetRequest{Email: "lock@example.com"}
+	resetReq := store.ResetRequest{Email: "lock@example.com"}
 	resetReqBody, _ := json.Marshal(resetReq)
 	resetResp, err := http.Post(testServer.URL+"/api/auth/reset-password/request", "application/json", bytes.NewReader(resetReqBody))
 	if err != nil {
@@ -221,7 +224,7 @@ func TestServAuthSecurityLockoutAndReset(t *testing.T) {
 	}
 
 	// 4. Confirm Password Reset with new password
-	confirmReq := ResetConfirm{
+	confirmReq := store.ResetConfirm{
 		Token:    resetRes.Token,
 		Password: "newpassword123",
 	}
@@ -237,7 +240,7 @@ func TestServAuthSecurityLockoutAndReset(t *testing.T) {
 	}
 
 	// 5. Test login with new password (should be unlocked and succeed!)
-	newLoginPayload := LoginRequest{
+	newLoginPayload := store.LoginRequest{
 		Username: "lockuser",
 		Password: "newpassword123",
 	}
@@ -305,14 +308,14 @@ func TestServAuthKeysAndSessions(t *testing.T) {
 		t.Fatalf("expected key validation StatusOK, got %d", respVal.StatusCode)
 	}
 
-	var valRes APIKey
+	var valRes store.APIKey
 	json.NewDecoder(respVal.Body).Decode(&valRes)
 	if valRes.Username != "service-account-alice" || valRes.Scopes[0] != "read:metrics" {
 		t.Errorf("unexpected scopes validation: %+v", valRes)
 	}
 
-	// 3. Register user and login to create a Session
-	regPayload := RegisterRequest{
+	// 3. Register user and login to create a store.Session
+	regPayload := store.RegisterRequest{
 		Username: "sessionuser",
 		Email:    "session@example.com",
 		Password: "password123",
@@ -324,7 +327,7 @@ func TestServAuthKeysAndSessions(t *testing.T) {
 	}
 	regResp.Body.Close()
 
-	loginPayload := LoginRequest{
+	loginPayload := store.LoginRequest{
 		Username: "sessionuser",
 		Password: "password123",
 	}
@@ -333,7 +336,7 @@ func TestServAuthKeysAndSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed login request: %v", err)
 	}
-	var loginRes LoginResponse
+	var loginRes store.LoginResponse
 	json.NewDecoder(loginResp.Body).Decode(&loginRes)
 	loginResp.Body.Close()
 
@@ -341,7 +344,7 @@ func TestServAuthKeysAndSessions(t *testing.T) {
 		t.Fatalf("expected login token for session tracking")
 	}
 
-	// 4. Revoke Session
+	// 4. Revoke store.Session
 	revPayload := map[string]string{"token": loginRes.Token}
 	revBody, _ := json.Marshal(revPayload)
 	revResp, err := http.Post(testServer.URL+"/api/auth/sessions/revoke", "application/json", bytes.NewReader(revBody))
@@ -367,7 +370,7 @@ func TestServAuthTenancyAndMfa(t *testing.T) {
 	defer testServer.Close()
 
 	// 1. Register same username under two different tenants -> both should succeed!
-	regPayload := RegisterRequest{
+	regPayload := store.RegisterRequest{
 		Username: "multitenant-bob",
 		Email:    "bob@example.com",
 		Password: "password123",
@@ -481,7 +484,7 @@ func TestServAuthUserMgmtAndSecrets(t *testing.T) {
 	defer testServer.Close()
 
 	// 1. Register and login
-	regPayload := RegisterRequest{
+	regPayload := store.RegisterRequest{
 		Username: "mgmt-user",
 		Email:    "mgmt@example.com",
 		Password: "password123",
@@ -493,7 +496,7 @@ func TestServAuthUserMgmtAndSecrets(t *testing.T) {
 	}
 	regResp.Body.Close()
 
-	loginBody, _ := json.Marshal(LoginRequest{Username: "mgmt-user", Password: "password123"})
+	loginBody, _ := json.Marshal(store.LoginRequest{Username: "mgmt-user", Password: "password123"})
 	loginResp, err := http.Post(testServer.URL+"/api/auth/login", "application/json", bytes.NewReader(loginBody))
 	if err != nil || loginResp.StatusCode != http.StatusOK {
 		t.Fatalf("login failed: %v", err)
@@ -537,7 +540,7 @@ func TestServAuthUserMgmtAndSecrets(t *testing.T) {
 	if err != nil || sessionsResp.StatusCode != http.StatusOK {
 		t.Fatalf("failed to query sessions: %v", err)
 	}
-	var sessionsList []Session
+	var sessionsList []store.Session
 	json.NewDecoder(sessionsResp.Body).Decode(&sessionsList)
 	sessionsResp.Body.Close()
 
@@ -614,16 +617,16 @@ func TestServAuthSecurityFeatures(t *testing.T) {
 	// 3. Test TOTP verification
 	mfaSecret := "secret-totp-key-for-test-user"
 	code := generateTOTP(mfaSecret)
-	if !verifyTOTP(mfaSecret, code) {
+	if !mfa.VerifyTOTP(mfaSecret, code) {
 		t.Errorf("TOTP verification failed for correct current code")
 	}
-	if verifyTOTP(mfaSecret, "000000") {
+	if mfa.VerifyTOTP(mfaSecret, "000000") {
 		t.Errorf("TOTP verification succeeded for invalid code")
 	}
 
-	// 4. Test Session Expiry helper
-	freshSession := &Session{CreatedAt: time.Now()}
-	expiredSession := &Session{CreatedAt: time.Now().Add(-25 * time.Hour)}
+	// 4. Test store.Session Expiry helper
+	freshSession := &store.Session{CreatedAt: time.Now()}
+	expiredSession := &store.Session{CreatedAt: time.Now().Add(-25 * time.Hour)}
 	if isSessionExpired(freshSession) {
 		t.Errorf("fresh session should not be expired")
 	}
@@ -639,7 +642,7 @@ func TestTableDrivenKeyValidation(t *testing.T) {
 	apiKeysMu.Lock()
 	testKeyBytes := sha256.Sum256([]byte("valid-key-id"))
 	testKeyHex := hex.EncodeToString(testKeyBytes[:])
-	apiKeys[testKeyHex] = &APIKey{
+	apiKeys[testKeyHex] = &store.APIKey{
 		Key:       testKeyHex,
 		Username:  "user-a",
 		CreatedAt: time.Now(),
@@ -701,7 +704,7 @@ func BenchmarkAPIKeyHashing(b *testing.B) {
 func BenchmarkAPIKeyValidation(b *testing.B) {
 	apiKeysMu.Lock()
 	testHash := fmt.Sprintf("%x", sha256.Sum256([]byte("valid-key-id")))
-	apiKeys[testHash] = &APIKey{
+	apiKeys[testHash] = &store.APIKey{
 		Key:       "valid-key-id",
 		Username:  "test-user",
 		CreatedAt: time.Now(),
