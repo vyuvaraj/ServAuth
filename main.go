@@ -739,6 +739,8 @@ func handleKeys(w http.ResponseWriter, r *http.Request) {
 	apiKeysMu.Unlock()
 	saveAPIKeysToStore()
 
+	_ = ServShared.EmitAuditEvent("ServAuth", "API_KEY_ISSUE", req.Username, map[string]interface{}{"scopes": req.Scopes})
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -774,6 +776,8 @@ func handleKeysValidate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid API key", http.StatusUnauthorized)
 		return
 	}
+
+	_ = ServShared.EmitAuditEvent("ServAuth", "API_KEY_VALIDATE", apiKey.Username, map[string]interface{}{"scopes": apiKey.Scopes})
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -852,6 +856,8 @@ func handleMfaSetup(w http.ResponseWriter, r *http.Request) {
 	usersMu.Unlock()
 	saveUsersToStore()
 
+	_ = ServShared.EmitAuditEvent("ServAuth", "MFA_SETUP", req.Username, map[string]interface{}{"tenant": tenantID})
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{
@@ -897,6 +903,8 @@ func handleMfaVerify(w http.ResponseWriter, r *http.Request) {
 		users[userKey] = user
 		usersMu.Unlock()
 		saveUsersToStore()
+
+		_ = ServShared.EmitAuditEvent("ServAuth", "MFA_VERIFY", req.Username, map[string]interface{}{"tenant": tenantID})
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
