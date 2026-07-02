@@ -523,6 +523,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	usersMu.Unlock()
 
 	saveUsersToStore()
+	_ = ServShared.EmitAuditEvent("ServAuth", "USER_REGISTER", req.Username, map[string]interface{}{"email": req.Email, "tenant": tenantID})
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -615,6 +616,7 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	sessionsMu.Unlock()
 	saveSessionsToStore()
+	_ = ServShared.EmitAuditEvent("ServAuth", "USER_LOGIN", user.Username, map[string]interface{}{"ip": r.RemoteAddr, "tenant": tenantID})
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -904,6 +906,8 @@ func handleSessionsRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_ = ServShared.EmitAuditEvent("ServAuth", "SESSION_REVOKE", session.Username, map[string]interface{}{"token": req.Token})
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"success","message":"Session revoked successfully"}`))
@@ -1007,6 +1011,7 @@ func handleSocialLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	redirectURL := fmt.Sprintf("https://auth.provider.com/%s/authorize?client_id=mock-client&redirect_uri=mock-redirect&response_type=code", provider)
+	_ = ServShared.EmitAuditEvent("ServAuth", "SOCIAL_LOGIN_REDIRECT", "guest", map[string]interface{}{"provider": provider})
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{
@@ -1192,6 +1197,8 @@ func handleSecretsEncrypt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_ = ServShared.EmitAuditEvent("ServAuth", "SECRET_ENCRYPT", "system", nil)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{
@@ -1220,6 +1227,8 @@ func handleSecretsDecrypt(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Decryption failed: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+
+	_ = ServShared.EmitAuditEvent("ServAuth", "SECRET_DECRYPT", "system", nil)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
