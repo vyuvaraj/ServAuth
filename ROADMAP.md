@@ -34,3 +34,24 @@ This roadmap outlines the planned development phases for the ServAuth identity p
 - [ ] **Secret Versioning** — KMS stores key versions; encryption always uses latest; decryption accepts any active version (SEC.11)
 - [x] **Tenant JWT Claim Enforcement** — Middleware verifies X-Tenant-ID header matches JWT tenant_id claim before any handler runs (SEC.12) [June 30, 2026]
 - [ ] **Audit Event Coverage** — Every privileged action (login, key issuance, MFA change) calls EmitAuditEvent; enforced by CI linter (TEST.7)
+
+## Phase 6: Package Extraction & Real Decomposition (Pending — July 2026)
+
+> **Issue:** `main.go` is 1,093 lines. Despite ARCH claims, no `pkg/` structure exists. Extract into proper packages.
+
+| # | Item | Effort | Description | Status |
+|---|------|--------|-------------|--------|
+| 6.1 | **Extract `pkg/handlers/`** | Medium | Move HTTP handler functions (register, login, refresh, MFA, etc.) into dedicated handler package | [ ] |
+| 6.2 | **Extract `pkg/oauth/`** | Medium | Move OAuth2/OIDC provider logic (authorize, token, JWKS, userinfo) into dedicated package | [ ] |
+| 6.3 | **Extract `pkg/mfa/`** | Small | Move TOTP/WebAuthn logic and verification into `pkg/mfa/` | [ ] |
+| 6.4 | **Extract `pkg/kms/`** | Small | Move envelope encryption, key versioning, and rotation into `pkg/kms/` | [ ] |
+| 6.5 | **main.go target: <100 lines** | — | After extraction, main.go should contain only server setup, route wiring, and startup | [ ] |
+
+## Phase 7: Enterprise Identity Features (Pending)
+- [ ] **SCIM Provisioning** — SCIM 2.0 endpoint for enterprise user/group sync from external IdPs (Okta, Azure AD)
+- [ ] **Passwordless Flow** — Magic link + WebAuthn-only authentication without password fallback
+- [ ] **Adaptive Risk-Based Auth** — Score login risk (new device, geo anomaly, brute force) and step-up to MFA dynamically
+- [ ] **User Federation** — Connect to external LDAP/AD directories as read-only user sources alongside local storage
+- [ ] **Self-Service Account Portal** — User-facing UI for password change, MFA enrollment, session listing, and OAuth consent management
+
+> See [UNIFIED_ROADMAP.md](../servverse-repo/UNIFIED_ROADMAP.md) for the full ecosystem priority matrix.
