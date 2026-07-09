@@ -478,6 +478,11 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	usersMu.Unlock()
 
 	if !exists {
+		_ = ServShared.EmitAuditEvent("ServAuth", "LOGIN_FAILED", req.Username, map[string]interface{}{
+			"ip":     r.RemoteAddr,
+			"reason": "user_not_found",
+			"tenant": tenantID,
+		})
 		http.Error(w, "Invalid username or password", http.StatusUnauthorized)
 		return
 	}
@@ -495,11 +500,21 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		u.FailedAttempts++
 		if u.FailedAttempts >= 3 {
 			u.LockedUntil = time.Now().Add(5 * time.Minute)
+			_ = ServShared.EmitAuditEvent("ServAuth", "ACCOUNT_LOCKED", req.Username, map[string]interface{}{
+				"ip":              r.RemoteAddr,
+				"failed_attempts": u.FailedAttempts,
+				"locked_until":    u.LockedUntil.UTC().Format(time.RFC3339),
+				"tenant":          tenantID,
+			})
 		}
 		users[userKey] = u
 		usersMu.Unlock()
 		saveUsersToStore()
-
+		_ = ServShared.EmitAuditEvent("ServAuth", "LOGIN_FAILED", req.Username, map[string]interface{}{
+			"ip":     r.RemoteAddr,
+			"reason": "invalid_password",
+			"tenant": tenantID,
+		})
 		http.Error(w, "Invalid username or password", http.StatusUnauthorized)
 		return
 	}
