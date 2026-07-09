@@ -95,6 +95,7 @@ type APIKey struct {
 	Username  string    `json:"username"`
 	Scopes    []string  `json:"scopes"`
 	CreatedAt time.Time `json:"created_at"`
+	Revoked   bool      `json:"revoked"`
 }
 
 type Session struct {

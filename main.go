@@ -329,6 +329,7 @@ func main() {
 	mux.HandleFunc("/oauth/token", handleToken)
 	mux.HandleFunc("/api/auth/keys", handleKeys)
 	mux.HandleFunc("/api/auth/keys/validate", handleKeysValidate)
+	mux.HandleFunc("/api/auth/keys/revoke", handleKeysRevoke)
 	mux.HandleFunc("/api/auth/sessions/revoke", handleSessionsRevoke)
 	mux.HandleFunc("/api/auth/mfa/setup", handleMfaSetup)
 	mux.HandleFunc("/api/auth/mfa/verify", handleMfaVerify)
@@ -787,7 +788,7 @@ func handleKeysValidate(w http.ResponseWriter, r *http.Request) {
 	apiKey, exists := apiKeys[hashedKey]
 	apiKeysMu.RUnlock()
 
-	if !exists {
+	if !exists || apiKey.Revoked {
 		http.Error(w, "Invalid API key", http.StatusUnauthorized)
 		return
 	}
@@ -798,6 +799,43 @@ func handleKeysValidate(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(apiKey)
 }
+
+func handleKeysRevoke(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Key string `json:"key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid payload", http.StatusBadRequest)
+		return
+	}
+
+	hashedBytes := sha256.Sum256([]byte(req.Key))
+	hashedKey := hex.EncodeToString(hashedBytes[:])
+
+	apiKeysMu.Lock()
+	apiKey, exists := apiKeys[hashedKey]
+	if exists {
+		apiKey.Revoked = true
+	}
+	apiKeysMu.Unlock()
+
+	if !exists {
+		http.Error(w, "API key not found", http.StatusNotFound)
+		return
+	}
+
+	saveAPIKeysToStore()
+	_ = ServShared.EmitAuditEvent("ServAuth", "API_KEY_REVOKE", apiKey.Username, map[string]interface{}{"scopes": apiKey.Scopes})
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"success","message":"API key revoked"}`))
+}
+
 
 func handleSessionsRevoke(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

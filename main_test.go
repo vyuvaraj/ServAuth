@@ -692,6 +692,50 @@ func TestTableDrivenKeyValidation(t *testing.T) {
 	}
 }
 
+func TestAPIKeyRevocation(t *testing.T) {
+	setupTest()
+
+	// 1. Register API key
+	reqPayload := `{"username":"alice","scopes":["read"]}`
+	req := httptest.NewRequest("POST", "/api/auth/keys", strings.NewReader(reqPayload))
+	w := httptest.NewRecorder()
+	handleKeys(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", w.Code)
+	}
+
+	var registerRes struct {
+		Key string `json:"key"`
+	}
+	json.NewDecoder(w.Body).Decode(&registerRes)
+
+	// 2. Validate it works
+	valPayload := fmt.Sprintf(`{"key":%q}`, registerRes.Key)
+	reqVal1 := httptest.NewRequest("POST", "/api/auth/keys/validate", strings.NewReader(valPayload))
+	wVal1 := httptest.NewRecorder()
+	handleKeysValidate(wVal1, reqVal1)
+	if wVal1.Code != http.StatusOK {
+		t.Errorf("expected 200 on initial validation, got %d", wVal1.Code)
+	}
+
+	// 3. Revoke the API key
+	revPayload := fmt.Sprintf(`{"key":%q}`, registerRes.Key)
+	reqRev := httptest.NewRequest("POST", "/api/auth/keys/revoke", strings.NewReader(revPayload))
+	wRev := httptest.NewRecorder()
+	handleKeysRevoke(wRev, reqRev)
+	if wRev.Code != http.StatusOK {
+		t.Fatalf("expected 200 on revoke, got %d", wRev.Code)
+	}
+
+	// 4. Validate again (should be 401 Unauthorized now!)
+	reqVal2 := httptest.NewRequest("POST", "/api/auth/keys/validate", strings.NewReader(valPayload))
+	wVal2 := httptest.NewRecorder()
+	handleKeysValidate(wVal2, reqVal2)
+	if wVal2.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized after key revocation, got %d", wVal2.Code)
+	}
+}
+
 func BenchmarkAPIKeyHashing(b *testing.B) {
 	key := "test-api-key-12345-sec"
 	b.ResetTimer()
