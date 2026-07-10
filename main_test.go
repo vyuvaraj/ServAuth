@@ -16,7 +16,10 @@ import (
 	"time"
 
 	"github.com/vyuvaraj/ServShared"
+	"servauth/pkg/handlers"
+	"servauth/pkg/kms"
 	"servauth/pkg/mfa"
+	"servauth/pkg/sessions"
 	"servauth/pkg/store"
 )
 
@@ -43,24 +46,24 @@ func generateTOTP(secret string) string {
 }
 
 func setupTest() {
-	usersMu.Lock()
-	users = make(map[string]store.User)
-	usersMu.Unlock()
+	handlers.UsersMu.Lock()
+	handlers.Users = make(map[string]store.User)
+	handlers.UsersMu.Unlock()
 
-	apiKeysMu.Lock()
-	apiKeys = make(map[string]*store.APIKey)
-	apiKeysMu.Unlock()
+	handlers.APIKeysMu.Lock()
+	handlers.APIKeys = make(map[string]*store.APIKey)
+	handlers.APIKeysMu.Unlock()
 
-	sessionsMu.Lock()
-	sessions = make(map[string]*store.Session)
-	sessionsMu.Unlock()
+	sessions.SessionsMu.Lock()
+	sessions.Sessions = make(map[string]*store.Session)
+	sessions.SessionsMu.Unlock()
 }
 
 func TestServAuthWorkflow(t *testing.T) {
 	setupTest()
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/auth/register", handleRegister)
-	mux.HandleFunc("/api/auth/login", handleLogin)
+	mux.HandleFunc("/api/auth/register", handlers.HandleRegister)
+	mux.HandleFunc("/api/auth/login", handlers.HandleLogin)
 
 	testServer := httptest.NewServer(mux)
 	defer testServer.Close()
@@ -120,7 +123,7 @@ func TestServAuthWorkflow(t *testing.T) {
 func TestServAuthOAuthToken(t *testing.T) {
 	setupTest()
 	mux := http.NewServeMux()
-	mux.HandleFunc("/oauth/token", handleToken)
+	mux.HandleFunc("/oauth/token", handlers.HandleToken)
 
 	testServer := httptest.NewServer(mux)
 	defer testServer.Close()
@@ -159,10 +162,10 @@ func TestServAuthOAuthToken(t *testing.T) {
 func TestServAuthSecurityLockoutAndReset(t *testing.T) {
 	setupTest()
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/auth/register", handleRegister)
-	mux.HandleFunc("/api/auth/login", handleLogin)
-	mux.HandleFunc("/api/auth/reset-password/request", handleResetRequest)
-	mux.HandleFunc("/api/auth/reset-password/confirm", handleResetConfirm)
+	mux.HandleFunc("/api/auth/register", handlers.HandleRegister)
+	mux.HandleFunc("/api/auth/login", handlers.HandleLogin)
+	mux.HandleFunc("/api/auth/reset-password/request", handlers.HandleResetRequest)
+	mux.HandleFunc("/api/auth/reset-password/confirm", handlers.HandleResetConfirm)
 
 	testServer := httptest.NewServer(mux)
 	defer testServer.Close()
@@ -260,11 +263,11 @@ func TestServAuthSecurityLockoutAndReset(t *testing.T) {
 func TestServAuthKeysAndSessions(t *testing.T) {
 	setupTest()
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/auth/register", handleRegister)
-	mux.HandleFunc("/api/auth/login", handleLogin)
-	mux.HandleFunc("/api/auth/keys", handleKeys)
-	mux.HandleFunc("/api/auth/keys/validate", handleKeysValidate)
-	mux.HandleFunc("/api/auth/sessions/revoke", handleSessionsRevoke)
+	mux.HandleFunc("/api/auth/register", handlers.HandleRegister)
+	mux.HandleFunc("/api/auth/login", handlers.HandleLogin)
+	mux.HandleFunc("/api/auth/keys", handlers.HandleKeys)
+	mux.HandleFunc("/api/auth/keys/validate", handlers.HandleKeysValidate)
+	mux.HandleFunc("/api/auth/sessions/revoke", handlers.HandleSessionsRevoke)
 
 	testServer := httptest.NewServer(mux)
 	defer testServer.Close()
@@ -362,10 +365,10 @@ func TestServAuthKeysAndSessions(t *testing.T) {
 func TestServAuthTenancyAndMfa(t *testing.T) {
 	setupTest()
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/auth/register", handleRegister)
-	mux.HandleFunc("/api/auth/login", handleLogin)
-	mux.HandleFunc("/api/auth/mfa/setup", handleMfaSetup)
-	mux.HandleFunc("/api/auth/mfa/verify", handleMfaVerify)
+	mux.HandleFunc("/api/auth/register", handlers.HandleRegister)
+	mux.HandleFunc("/api/auth/login", handlers.HandleLogin)
+	mux.HandleFunc("/api/auth/mfa/setup", handlers.HandleMfaSetup)
+	mux.HandleFunc("/api/auth/mfa/verify", handlers.HandleMfaVerify)
 
 	testServer := httptest.NewServer(mux)
 	defer testServer.Close()
@@ -432,8 +435,8 @@ func TestServAuthTenancyAndMfa(t *testing.T) {
 func TestServAuthSocialLogin(t *testing.T) {
 	setupTest()
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/auth/social/login", handleSocialLogin)
-	mux.HandleFunc("/api/auth/social/callback", handleSocialCallback)
+	mux.HandleFunc("/api/auth/social/login", handlers.HandleSocialLogin)
+	mux.HandleFunc("/api/auth/social/callback", handlers.HandleSocialCallback)
 
 	testServer := httptest.NewServer(mux)
 	defer testServer.Close()
@@ -473,13 +476,13 @@ func TestServAuthSocialLogin(t *testing.T) {
 func TestServAuthUserMgmtAndSecrets(t *testing.T) {
 	setupTest()
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/auth/register", handleRegister)
-	mux.HandleFunc("/api/auth/login", handleLogin)
-	mux.HandleFunc("/api/auth/users", handleUsers)
-	mux.HandleFunc("/api/auth/users/roles", handleUsersRoles)
-	mux.HandleFunc("/api/auth/sessions", handleSessions)
-	mux.HandleFunc("/api/auth/secrets/encrypt", handleSecretsEncrypt)
-	mux.HandleFunc("/api/auth/secrets/decrypt", handleSecretsDecrypt)
+	mux.HandleFunc("/api/auth/register", handlers.HandleRegister)
+	mux.HandleFunc("/api/auth/login", handlers.HandleLogin)
+	mux.HandleFunc("/api/auth/users", handlers.HandleUsers)
+	mux.HandleFunc("/api/auth/users/roles", handlers.HandleUsersRoles)
+	mux.HandleFunc("/api/auth/sessions", handlers.HandleSessions)
+	mux.HandleFunc("/api/auth/secrets/encrypt", handlers.HandleSecretsEncrypt)
+	mux.HandleFunc("/api/auth/secrets/decrypt", handlers.HandleSecretsDecrypt)
 
 	testServer := httptest.NewServer(mux)
 	defer testServer.Close()
@@ -590,24 +593,24 @@ func TestServAuthUserMgmtAndSecrets(t *testing.T) {
 func TestServAuthSecurityFeatures(t *testing.T) {
 	setupTest()
 	// 1. Test Bcrypt hashing
-	hash, err := hashPassword("mySecretPassword")
+	hash, err := handlers.HashPassword("mySecretPassword")
 	if err != nil {
 		t.Fatalf("bcrypt hashing failed: %v", err)
 	}
-	if !verifyPassword("mySecretPassword", hash) {
+	if !handlers.VerifyPassword("mySecretPassword", hash) {
 		t.Errorf("bcrypt verification failed for correct password")
 	}
-	if verifyPassword("wrongPassword", hash) {
+	if handlers.VerifyPassword("wrongPassword", hash) {
 		t.Errorf("bcrypt verification succeeded for incorrect password")
 	}
 
 	// 2. Test AES-GCM encryption/decryption
 	originalText := "sensitive-information"
-	ciphertext, err := encryptAES(originalText)
+	ciphertext, err := kms.EncryptAES(originalText)
 	if err != nil {
 		t.Fatalf("AES-GCM encryption failed: %v", err)
 	}
-	decryptedText, err := decryptAES(ciphertext)
+	decryptedText, err := kms.DecryptAES(ciphertext)
 	if err != nil {
 		t.Fatalf("AES-GCM decryption failed: %v", err)
 	}
@@ -628,10 +631,10 @@ func TestServAuthSecurityFeatures(t *testing.T) {
 	// 4. Test store.Session Expiry helper
 	freshSession := &store.Session{CreatedAt: time.Now()}
 	expiredSession := &store.Session{CreatedAt: time.Now().Add(-25 * time.Hour)}
-	if isSessionExpired(freshSession) {
+	if sessions.IsSessionExpired(freshSession) {
 		t.Errorf("fresh session should not be expired")
 	}
-	if !isSessionExpired(expiredSession) {
+	if !sessions.IsSessionExpired(expiredSession) {
 		t.Errorf("session older than 24 hours should be expired")
 	}
 }
@@ -640,18 +643,18 @@ func TestTableDrivenKeyValidation(t *testing.T) {
 	setupTest()
 
 	// Pre-populate some keys
-	apiKeysMu.Lock()
+	handlers.APIKeysMu.Lock()
 	testKeyBytes := sha256.Sum256([]byte("valid-key-id"))
 	testKeyHex := hex.EncodeToString(testKeyBytes[:])
-	apiKeys[testKeyHex] = &store.APIKey{
+	handlers.APIKeys[testKeyHex] = &store.APIKey{
 		Key:       testKeyHex,
 		Username:  "user-a",
 		CreatedAt: time.Now(),
 	}
-	apiKeysMu.Unlock()
+	handlers.APIKeysMu.Unlock()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/auth/keys/validate", handleKeysValidate)
+	mux.HandleFunc("/api/auth/keys/validate", handlers.HandleKeysValidate)
 	testServer := httptest.NewServer(mux)
 	defer testServer.Close()
 
@@ -700,7 +703,7 @@ func TestAPIKeyRevocation(t *testing.T) {
 	reqPayload := `{"username":"alice","scopes":["read"]}`
 	req := httptest.NewRequest("POST", "/api/auth/keys", strings.NewReader(reqPayload))
 	w := httptest.NewRecorder()
-	handleKeys(w, req)
+	handlers.HandleKeys(w, req)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d", w.Code)
 	}
@@ -714,7 +717,7 @@ func TestAPIKeyRevocation(t *testing.T) {
 	valPayload := fmt.Sprintf(`{"key":%q}`, registerRes.Key)
 	reqVal1 := httptest.NewRequest("POST", "/api/auth/keys/validate", strings.NewReader(valPayload))
 	wVal1 := httptest.NewRecorder()
-	handleKeysValidate(wVal1, reqVal1)
+	handlers.HandleKeysValidate(wVal1, reqVal1)
 	if wVal1.Code != http.StatusOK {
 		t.Errorf("expected 200 on initial validation, got %d", wVal1.Code)
 	}
@@ -723,7 +726,7 @@ func TestAPIKeyRevocation(t *testing.T) {
 	revPayload := fmt.Sprintf(`{"key":%q}`, registerRes.Key)
 	reqRev := httptest.NewRequest("POST", "/api/auth/keys/revoke", strings.NewReader(revPayload))
 	wRev := httptest.NewRecorder()
-	handleKeysRevoke(wRev, reqRev)
+	handlers.HandleKeysRevoke(wRev, reqRev)
 	if wRev.Code != http.StatusOK {
 		t.Fatalf("expected 200 on revoke, got %d", wRev.Code)
 	}
@@ -731,7 +734,7 @@ func TestAPIKeyRevocation(t *testing.T) {
 	// 4. Validate again (should be 401 Unauthorized now!)
 	reqVal2 := httptest.NewRequest("POST", "/api/auth/keys/validate", strings.NewReader(valPayload))
 	wVal2 := httptest.NewRecorder()
-	handleKeysValidate(wVal2, reqVal2)
+	handlers.HandleKeysValidate(wVal2, reqVal2)
 	if wVal2.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401 Unauthorized after key revocation, got %d", wVal2.Code)
 	}
@@ -780,22 +783,22 @@ func BenchmarkAPIKeyHashing(b *testing.B) {
 }
 
 func BenchmarkAPIKeyValidation(b *testing.B) {
-	apiKeysMu.Lock()
+	handlers.APIKeysMu.Lock()
 	testHash := fmt.Sprintf("%x", sha256.Sum256([]byte("valid-key-id")))
-	apiKeys[testHash] = &store.APIKey{
+	handlers.APIKeys[testHash] = &store.APIKey{
 		Key:       "valid-key-id",
 		Username:  "test-user",
 		CreatedAt: time.Now(),
 	}
-	apiKeysMu.Unlock()
+	handlers.APIKeysMu.Unlock()
 
 	b.ResetTimer()
 	for b.Loop() {
 		key := "valid-key-id"
 		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(key)))
-		apiKeysMu.RLock()
-		_, _ = apiKeys[hash]
-		apiKeysMu.RUnlock()
+		handlers.APIKeysMu.RLock()
+		_, _ = handlers.APIKeys[hash]
+		handlers.APIKeysMu.RUnlock()
 	}
 }
 

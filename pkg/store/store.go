@@ -1,6 +1,7 @@
 package store
 
 import (
+	"crypto/rsa"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -105,6 +106,13 @@ type Session struct {
 	UserAgent string    `json:"user_agent"`
 	CreatedAt time.Time `json:"created_at"`
 	Revoked   bool      `json:"revoked"`
+}
+
+type JWKKeyPair struct {
+	KeyID      string
+	PrivateKey *rsa.PrivateKey
+	PublicKey  *rsa.PublicKey
+	CreatedAt  time.Time
 }
 
 type UserStore interface {
