@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vyuvaraj/ServShared"
 	"servauth/pkg/mfa"
 	"servauth/pkg/store"
 )
@@ -736,10 +737,43 @@ func TestAPIKeyRevocation(t *testing.T) {
 	}
 }
 
+func TestTraceparentPropagation(t *testing.T) {
+	setupTest()
+
+	// Initialize tracing
+	ServShared.InitTrace("servauth-test")
+
+	// Set up the trace middleware wrapped handler
+	handler := ServShared.TraceMiddleware("servauth", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Inside the handler, traceparent header must be set
+		tp := r.Header.Get("traceparent")
+		if !strings.Contains(tp, "4fa3b1234567890abcdef1234567890a") {
+			t.Errorf("Expected traceparent to contain trace ID 4fa3b1234567890abcdef1234567890a, got %q", tp)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/api/auth/config", nil)
+	req.Header.Set("traceparent", "00-4fa3b1234567890abcdef1234567890a-1122334455667788-01")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected 200, got %d", w.Code)
+	}
+
+	// Verify the response header propagates it too
+	respTp := w.Header().Get("traceparent")
+	if !strings.Contains(respTp, "4fa3b1234567890abcdef1234567890a") {
+		t.Errorf("Expected response traceparent to contain trace ID, got %q", respTp)
+	}
+}
+
 func BenchmarkAPIKeyHashing(b *testing.B) {
 	key := "test-api-key-12345-sec"
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		h := sha256.Sum256([]byte(key))
 		_ = h
 	}
@@ -756,7 +790,7 @@ func BenchmarkAPIKeyValidation(b *testing.B) {
 	apiKeysMu.Unlock()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		key := "valid-key-id"
 		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(key)))
 		apiKeysMu.RLock()
@@ -764,4 +798,5 @@ func BenchmarkAPIKeyValidation(b *testing.B) {
 		apiKeysMu.RUnlock()
 	}
 }
+
 
