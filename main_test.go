@@ -837,4 +837,44 @@ func BenchmarkAPIKeyValidation(b *testing.B) {
 	}
 }
 
+type mockStuffingDetector struct{}
+
+func (m *mockStuffingDetector) Detect() (bool, []string) {
+	return true, []string{"192.168.1.100"}
+}
+
+func TestPluggableStuffingDetector(t *testing.T) {
+	// 1. Without hook registered: returns 501
+	req1 := httptest.NewRequest("GET", "/api/auth/stuffing", nil)
+	rr1 := httptest.NewRecorder()
+	handlers.HandleCredentialStuffing(rr1, req1)
+
+	if rr1.Code != http.StatusNotImplemented {
+		t.Errorf("expected 501 Not Implemented, got %d", rr1.Code)
+	}
+
+	// 2. With hook registered: returns 200 with mock results
+	mock := &mockStuffingDetector{}
+	handlers.ActiveStuffingDetector = mock
+	defer func() { handlers.ActiveStuffingDetector = nil }()
+
+	req2 := httptest.NewRequest("GET", "/api/auth/stuffing", nil)
+	rr2 := httptest.NewRecorder()
+	handlers.HandleCredentialStuffing(rr2, req2)
+
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", rr2.Code)
+	}
+
+	var resp struct {
+		StuffingDetected bool     `json:"stuffing_detected"`
+		FlaggedIPs       []string `json:"flagged_ips"`
+	}
+	json.NewDecoder(rr2.Body).Decode(&resp)
+
+	if !resp.StuffingDetected || len(resp.FlaggedIPs) != 1 || resp.FlaggedIPs[0] != "192.168.1.100" {
+		t.Errorf("unexpected stuffing response: %+v", resp)
+	}
+}
+
 

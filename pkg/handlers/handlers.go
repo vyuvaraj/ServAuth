@@ -1109,14 +1109,27 @@ func HandleAdaptiveRiskScore(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(fmt.Appendf(nil, `{"risk_score":%.2f,"require_mfa":%t}`, risk, requireMFA))
 }
 
+// StuffingDetector defines pluggable coordinator hooks for analyzing credential stuffing attempts.
+type StuffingDetector interface {
+	Detect() (stuffingDetected bool, flaggedIPs []string)
+}
+
+// ActiveStuffingDetector is the globally registered credential stuffing detection hook.
+var ActiveStuffingDetector StuffingDetector
+
 func HandleCredentialStuffing(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	stuffingIPs := sessions.GetStuffingIPs()
+	if ActiveStuffingDetector == nil {
+		http.Error(w, "Credential stuffing detection is an Enterprise Edition feature.", http.StatusNotImplemented)
+		return
+	}
+
+	stuffingDetected, flaggedIPs := ActiveStuffingDetector.Detect()
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"stuffing_detected": len(stuffingIPs) > 0,
-		"flagged_ips":        stuffingIPs,
+		"stuffing_detected": stuffingDetected,
+		"flagged_ips":        flaggedIPs,
 	})
 }
