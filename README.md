@@ -1,5 +1,9 @@
 # ServAuth
 
+```bash
+docker run -p 8086:8086 ghcr.io/vyuvaraj/servauth:latest
+```
+
 ServAuth is the identity provider and access token validation service of the Servverse ecosystem.
 
 ## Features
