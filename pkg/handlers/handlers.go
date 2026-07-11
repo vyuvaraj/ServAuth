@@ -63,6 +63,7 @@ func InitStore() {
 	client := ServShared.NewStoreClient()
 	UserStore = store.NewServStoreUserStore(client)
 	LoadStateFromStore()
+	InitEnterprise()
 }
 
 func LoadStateFromStore() {
