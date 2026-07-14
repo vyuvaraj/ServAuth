@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -41,6 +42,7 @@ func main() {
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 	mux.HandleFunc("/api/version", ServShared.VersionHandler("servauth", "1.0.0"))
+	mux.HandleFunc("/api/v1/version", ServShared.VersionHandler("servauth", "1.0.0"))
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
@@ -69,11 +71,27 @@ func main() {
 	mux.HandleFunc("/api/auth/risk", handlers.HandleAdaptiveRiskScore)
 	mux.HandleFunc("/api/auth/security/stuffing-detector", handlers.HandleCredentialStuffing)
 
-	// Wrap in ServShared middleware: OTel tracing → JWT auth → tenant enforcement → handlers
+	// Wrapper handler for /api/v1/ prefix rewriting (V1.1 support)
+	v1Wrapper := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/v1/oauth/") {
+			r.URL.Path = "/oauth/" + strings.TrimPrefix(r.URL.Path, "/api/v1/oauth/")
+		} else if strings.HasPrefix(r.URL.Path, "/api/v1/") {
+			r.URL.Path = "/api/" + strings.TrimPrefix(r.URL.Path, "/api/v1/")
+		}
+		mux.ServeHTTP(w, r)
+	})
+
+	// Wrap in ServShared middleware: OTel tracing → RateLimit → CORS → MaxBytes → JWT auth → tenant enforcement → handlers
 	serverHandler := ServShared.TraceMiddleware("servauth",
-		ServShared.AuthMiddleware(
-			handlers.RevocationMiddleware(
-				ServShared.TenantMiddleware(mux),
+		ServShared.RateLimitMiddleware(
+			ServShared.CORSMiddleware(
+				ServShared.MaxBytesMiddleware(10*1024*1024)(
+					ServShared.AuthMiddleware(
+						handlers.RevocationMiddleware(
+							ServShared.TenantMiddleware(v1Wrapper),
+						),
+					),
+				),
 			),
 		),
 	)

@@ -146,7 +146,7 @@ func InitJWKS() {
 
 func HandleRegister(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		httpError(w, r, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -164,14 +164,14 @@ func HandleRegister(w http.ResponseWriter, r *http.Request) {
 	UsersMu.Lock()
 	if _, exists := Users[userKey]; exists {
 		UsersMu.Unlock()
-		http.Error(w, "Username already exists in this tenant", http.StatusConflict)
+		httpError(w, r, "Username already exists in this tenant", http.StatusConflict)
 		return
 	}
 
 	saltBytes := make([]byte, 16)
 	if _, err := io.ReadFull(rand.Reader, saltBytes); err != nil {
 		UsersMu.Unlock()
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		httpError(w, r, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 	salt := hex.EncodeToString(saltBytes)
@@ -179,7 +179,7 @@ func HandleRegister(w http.ResponseWriter, r *http.Request) {
 	hashedPassword, err := HashPassword(req.Password)
 	if err != nil {
 		UsersMu.Unlock()
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		httpError(w, r, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -205,7 +205,7 @@ func HandleRegister(w http.ResponseWriter, r *http.Request) {
 
 func HandleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		httpError(w, r, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -246,7 +246,7 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 			"reason": "user_not_found",
 			"tenant": tenantID,
 		})
-		http.Error(w, "Invalid username or password", http.StatusUnauthorized)
+		httpError(w, r, "Invalid username or password", http.StatusUnauthorized)
 		return
 	}
 
@@ -278,7 +278,7 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 			"reason": "invalid_password",
 			"tenant": tenantID,
 		})
-		http.Error(w, "Invalid username or password", http.StatusUnauthorized)
+		httpError(w, r, "Invalid username or password", http.StatusUnauthorized)
 		return
 	}
 
@@ -305,7 +305,7 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 		token, err = ServShared.GenerateUserToken(secret, user.Username, []string{"user"}, tenantID, 24*time.Hour)
 	}
 	if err != nil {
-		http.Error(w, "Token generation failed", http.StatusInternalServerError)
+		httpError(w, r, "Token generation failed", http.StatusInternalServerError)
 		return
 	}
 
@@ -333,7 +333,7 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 func HandleToken(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		httpError(w, r, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -469,7 +469,7 @@ func HandleToken(w http.ResponseWriter, r *http.Request) {
 		token, err = tokenObj.SignedString([]byte(secret))
 	}
 	if err != nil {
-		http.Error(w, "Token generation failed", http.StatusInternalServerError)
+		httpError(w, r, "Token generation failed", http.StatusInternalServerError)
 		return
 	}
 
@@ -492,7 +492,7 @@ func HandleToken(w http.ResponseWriter, r *http.Request) {
 
 func HandleResetRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		httpError(w, r, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -533,7 +533,7 @@ func HandleResetRequest(w http.ResponseWriter, r *http.Request) {
 
 func HandleResetConfirm(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		httpError(w, r, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -555,7 +555,7 @@ func HandleResetConfirm(w http.ResponseWriter, r *http.Request) {
 
 	if !found {
 		UsersMu.Unlock()
-		http.Error(w, "Invalid or expired token", http.StatusBadRequest)
+		httpError(w, r, "Invalid or expired token", http.StatusBadRequest)
 		return
 	}
 
@@ -563,7 +563,7 @@ func HandleResetConfirm(w http.ResponseWriter, r *http.Request) {
 	hashed, err := HashPassword(req.Password)
 	if err != nil {
 		UsersMu.Unlock()
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		httpError(w, r, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 	u.Password = hashed
@@ -580,7 +580,7 @@ func HandleResetConfirm(w http.ResponseWriter, r *http.Request) {
 
 func HandleKeys(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		httpError(w, r, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -589,7 +589,7 @@ func HandleKeys(w http.ResponseWriter, r *http.Request) {
 		Scopes   []string `json:"scopes"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid payload", http.StatusBadRequest)
+		httpError(w, r, "Invalid payload", http.StatusBadRequest)
 		return
 	}
 
@@ -627,7 +627,7 @@ func HandleKeys(w http.ResponseWriter, r *http.Request) {
 
 func HandleKeysValidate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		httpError(w, r, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -635,7 +635,7 @@ func HandleKeysValidate(w http.ResponseWriter, r *http.Request) {
 		Key string `json:"key"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid payload", http.StatusBadRequest)
+		httpError(w, r, "Invalid payload", http.StatusBadRequest)
 		return
 	}
 
@@ -648,7 +648,7 @@ func HandleKeysValidate(w http.ResponseWriter, r *http.Request) {
 	APIKeysMu.RUnlock()
 
 	if !exists || apiKey.Revoked {
-		http.Error(w, "Invalid API key", http.StatusUnauthorized)
+		httpError(w, r, "Invalid API key", http.StatusUnauthorized)
 		return
 	}
 
@@ -661,7 +661,7 @@ func HandleKeysValidate(w http.ResponseWriter, r *http.Request) {
 
 func HandleKeysRevoke(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		httpError(w, r, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -669,7 +669,7 @@ func HandleKeysRevoke(w http.ResponseWriter, r *http.Request) {
 		Key string `json:"key"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid payload", http.StatusBadRequest)
+		httpError(w, r, "Invalid payload", http.StatusBadRequest)
 		return
 	}
 
@@ -684,7 +684,7 @@ func HandleKeysRevoke(w http.ResponseWriter, r *http.Request) {
 	APIKeysMu.Unlock()
 
 	if !exists {
-		http.Error(w, "API key not found", http.StatusNotFound)
+		httpError(w, r, "API key not found", http.StatusNotFound)
 		return
 	}
 
@@ -697,7 +697,7 @@ func HandleKeysRevoke(w http.ResponseWriter, r *http.Request) {
 
 func HandleSessionsRevoke(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		httpError(w, r, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -705,7 +705,7 @@ func HandleSessionsRevoke(w http.ResponseWriter, r *http.Request) {
 		Token string `json:"token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid payload", http.StatusBadRequest)
+		httpError(w, r, "Invalid payload", http.StatusBadRequest)
 		return
 	}
 
@@ -723,7 +723,7 @@ func HandleSessionsRevoke(w http.ResponseWriter, r *http.Request) {
 	_ = sessions.EnterpriseRevokeAuthSession(req.Token)
 
 	if !exists {
-		http.Error(w, "store.Session not found", http.StatusNotFound)
+		httpError(w, r, "store.Session not found", http.StatusNotFound)
 		return
 	}
 
@@ -736,12 +736,12 @@ func HandleSessionsRevoke(w http.ResponseWriter, r *http.Request) {
 
 func HandleMfaSetup(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		httpError(w, r, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	if ActiveMfaEngine == nil {
-		http.Error(w, "MFA is an Enterprise Edition feature.", http.StatusNotImplemented)
+		httpError(w, r, "MFA is an Enterprise Edition feature.", http.StatusNotImplemented)
 		return
 	}
 
@@ -749,7 +749,7 @@ func HandleMfaSetup(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid payload", http.StatusBadRequest)
+		httpError(w, r, "Invalid payload", http.StatusBadRequest)
 		return
 	}
 
@@ -763,14 +763,14 @@ func HandleMfaSetup(w http.ResponseWriter, r *http.Request) {
 	user, exists := Users[userKey]
 	if !exists {
 		UsersMu.Unlock()
-		http.Error(w, "store.User not found", http.StatusNotFound)
+		httpError(w, r, "store.User not found", http.StatusNotFound)
 		return
 	}
 
 	secret, qrCodeURL, err := ActiveMfaEngine.Setup(req.Username)
 	if err != nil {
 		UsersMu.Unlock()
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		httpError(w, r, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -793,12 +793,12 @@ func HandleMfaSetup(w http.ResponseWriter, r *http.Request) {
 
 func HandleMfaVerify(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		httpError(w, r, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	if ActiveMfaEngine == nil {
-		http.Error(w, "MFA is an Enterprise Edition feature.", http.StatusNotImplemented)
+		httpError(w, r, "MFA is an Enterprise Edition feature.", http.StatusNotImplemented)
 		return
 	}
 
@@ -807,7 +807,7 @@ func HandleMfaVerify(w http.ResponseWriter, r *http.Request) {
 		Code     string `json:"code"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid payload", http.StatusBadRequest)
+		httpError(w, r, "Invalid payload", http.StatusBadRequest)
 		return
 	}
 
@@ -821,7 +821,7 @@ func HandleMfaVerify(w http.ResponseWriter, r *http.Request) {
 	user, exists := Users[userKey]
 	if !exists {
 		UsersMu.Unlock()
-		http.Error(w, "store.User not found", http.StatusNotFound)
+		httpError(w, r, "store.User not found", http.StatusNotFound)
 		return
 	}
 
@@ -841,7 +841,7 @@ func HandleMfaVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	UsersMu.Unlock()
-	http.Error(w, "Invalid verification code", http.StatusUnauthorized)
+	httpError(w, r, "Invalid verification code", http.StatusUnauthorized)
 }
 
 // SocialAuthProvider defines dynamic hooks for third-party OAuth logins.
@@ -866,12 +866,12 @@ var ActiveMfaEngine MfaEngine
 func HandleSocialLogin(w http.ResponseWriter, r *http.Request) {
 	provider := r.URL.Query().Get("provider")
 	if provider != "google" && provider != "github" {
-		http.Error(w, "Unsupported provider", http.StatusBadRequest)
+		httpError(w, r, "Unsupported provider", http.StatusBadRequest)
 		return
 	}
 
 	if ActiveSocialProvider == nil {
-		http.Error(w, "Social authentication is an Enterprise Edition feature.", http.StatusNotImplemented)
+		httpError(w, r, "Social authentication is an Enterprise Edition feature.", http.StatusNotImplemented)
 		return
 	}
 
@@ -880,7 +880,7 @@ func HandleSocialLogin(w http.ResponseWriter, r *http.Request) {
 
 func HandleSocialCallback(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		httpError(w, r, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -889,23 +889,23 @@ func HandleSocialCallback(w http.ResponseWriter, r *http.Request) {
 		Code     string `json:"code"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid payload", http.StatusBadRequest)
+		httpError(w, r, "Invalid payload", http.StatusBadRequest)
 		return
 	}
 
 	if req.Code == "" || len(req.Code) < 4 {
-		http.Error(w, "Invalid auth code", http.StatusBadRequest)
+		httpError(w, r, "Invalid auth code", http.StatusBadRequest)
 		return
 	}
 
 	if ActiveSocialProvider == nil {
-		http.Error(w, "Social authentication is an Enterprise Edition feature.", http.StatusNotImplemented)
+		httpError(w, r, "Social authentication is an Enterprise Edition feature.", http.StatusNotImplemented)
 		return
 	}
 
 	username, err := ActiveSocialProvider.Callback(w, r, req.Provider, req.Code)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+		httpError(w, r, err.Error(), http.StatusUnauthorized)
 		return
 	}
 
@@ -942,7 +942,7 @@ func HandleSocialCallback(w http.ResponseWriter, r *http.Request) {
 		token, err = ServShared.GenerateUserToken(secret, username, []string{"user"}, tenantID, 24*time.Hour)
 	}
 	if err != nil {
-		http.Error(w, "Token generation failed", http.StatusInternalServerError)
+		httpError(w, r, "Token generation failed", http.StatusInternalServerError)
 		return
 	}
 
@@ -957,7 +957,7 @@ func HandleSocialCallback(w http.ResponseWriter, r *http.Request) {
 
 func HandleUsers(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		httpError(w, r, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -987,7 +987,7 @@ func HandleUsers(w http.ResponseWriter, r *http.Request) {
 
 func HandleUsersRoles(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		httpError(w, r, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -996,7 +996,7 @@ func HandleUsersRoles(w http.ResponseWriter, r *http.Request) {
 		Scopes   []string `json:"scopes"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid payload", http.StatusBadRequest)
+		httpError(w, r, "Invalid payload", http.StatusBadRequest)
 		return
 	}
 
@@ -1011,7 +1011,7 @@ func HandleUsersRoles(w http.ResponseWriter, r *http.Request) {
 	UsersMu.Unlock()
 
 	if !exists {
-		http.Error(w, "store.User not found", http.StatusNotFound)
+		httpError(w, r, "store.User not found", http.StatusNotFound)
 		return
 	}
 
@@ -1026,7 +1026,7 @@ func HandleUsersRoles(w http.ResponseWriter, r *http.Request) {
 
 func HandleSessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		httpError(w, r, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -1039,7 +1039,7 @@ func HandleSessions(w http.ResponseWriter, r *http.Request) {
 
 func HandleSecretsEncrypt(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		httpError(w, r, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -1047,13 +1047,13 @@ func HandleSecretsEncrypt(w http.ResponseWriter, r *http.Request) {
 		Plaintext string `json:"plaintext"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid payload", http.StatusBadRequest)
+		httpError(w, r, "Invalid payload", http.StatusBadRequest)
 		return
 	}
 
 	ciphertext, err := kms.EncryptAES(req.Plaintext)
 	if err != nil {
-		http.Error(w, "Encryption failed: "+err.Error(), http.StatusInternalServerError)
+		httpError(w, r, "Encryption failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -1069,7 +1069,7 @@ func HandleSecretsEncrypt(w http.ResponseWriter, r *http.Request) {
 
 func HandleSecretsDecrypt(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		httpError(w, r, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -1078,13 +1078,13 @@ func HandleSecretsDecrypt(w http.ResponseWriter, r *http.Request) {
 		EncryptedDataKey string `json:"encrypted_data_key"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid payload", http.StatusBadRequest)
+		httpError(w, r, "Invalid payload", http.StatusBadRequest)
 		return
 	}
 
 	plaintext, err := kms.DecryptAES(req.Ciphertext)
 	if err != nil {
-		http.Error(w, "Decryption failed: "+err.Error(), http.StatusBadRequest)
+		httpError(w, r, "Decryption failed: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -1099,7 +1099,7 @@ func HandleSecretsDecrypt(w http.ResponseWriter, r *http.Request) {
 
 func HandleJWKS(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		httpError(w, r, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -1133,13 +1133,13 @@ func HandleJWKS(w http.ResponseWriter, r *http.Request) {
 
 func HandleRotateJWKS(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		httpError(w, r, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		http.Error(w, "Key generation failed", http.StatusInternalServerError)
+		httpError(w, r, "Key generation failed", http.StatusInternalServerError)
 		return
 	}
 	pub := &priv.PublicKey
@@ -1207,7 +1207,7 @@ func HandleCredentialStuffing(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	if ActiveStuffingDetector == nil {
-		http.Error(w, "Credential stuffing detection is an Enterprise Edition feature.", http.StatusNotImplemented)
+		httpError(w, r, "Credential stuffing detection is an Enterprise Edition feature.", http.StatusNotImplemented)
 		return
 	}
 
@@ -1240,4 +1240,27 @@ func RevocationMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func httpError(w http.ResponseWriter, r *http.Request, error string, code int) {
+	var errorCode string
+	switch code {
+	case http.StatusMethodNotAllowed:
+		errorCode = "ERR_METHOD_NOT_ALLOWED"
+	case http.StatusBadRequest:
+		errorCode = "ERR_BAD_REQUEST"
+	case http.StatusUnauthorized:
+		errorCode = "ERR_UNAUTHORIZED"
+	case http.StatusForbidden:
+		errorCode = "ERR_FORBIDDEN"
+	case http.StatusNotFound:
+		errorCode = "ERR_NOT_FOUND"
+	case http.StatusConflict:
+		errorCode = "ERR_CONFLICT"
+	case http.StatusNotImplemented:
+		errorCode = "ERR_NOT_IMPLEMENTED"
+	default:
+		errorCode = "ERR_INTERNAL_SERVER_ERROR"
+	}
+	ServShared.WriteJSONError(w, r, error, errorCode, code)
 }
