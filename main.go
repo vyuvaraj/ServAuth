@@ -72,7 +72,9 @@ func main() {
 	// Wrap in ServShared middleware: OTel tracing → JWT auth → tenant enforcement → handlers
 	serverHandler := ServShared.TraceMiddleware("servauth",
 		ServShared.AuthMiddleware(
-			ServShared.TenantMiddleware(mux),
+			handlers.RevocationMiddleware(
+				ServShared.TenantMiddleware(mux),
+			),
 		),
 	)
 

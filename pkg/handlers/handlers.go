@@ -364,6 +364,70 @@ func HandleToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if grantType == "refresh_token" {
+		// 1. Get refresh token
+		refreshToken := r.FormValue("refresh_token")
+		if refreshToken == "" && r.Header.Get("Content-Type") == "application/json" {
+			var req struct {
+				RefreshToken string `json:"refresh_token"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			refreshToken = req.RefreshToken
+		}
+
+		if refreshToken == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"error":"invalid_request","message":"refresh_token is required"}`))
+			return
+		}
+
+		// 2. Lock to prevent race condition
+		sessions.SessionsMu.Lock()
+		session, exists := sessions.Sessions[refreshToken]
+		if !exists || session.Revoked || sessions.IsSessionExpired(session) {
+			sessions.SessionsMu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":"invalid_grant","message":"refresh token is invalid, expired, or already used"}`))
+			return
+		}
+
+		// Revoke the old refresh token immediately (Token Rotation) to prevent reuse/race condition
+		session.Revoked = true
+		sessions.SessionsMu.Unlock()
+
+		SaveSessionsToStore()
+
+		// 3. Generate new tokens
+		secret := os.Getenv("SERV_JWT_SECRET")
+		if secret == "" {
+			secret = "test-secret-key-12345"
+		}
+		tenantID := r.Header.Get("X-Tenant-ID")
+
+		newAccessToken, _ := ServShared.GenerateUserToken(secret, session.Username, []string{"user"}, tenantID, 1*time.Hour)
+		newRefreshToken, _ := ServShared.GenerateUserToken(secret, session.Username, []string{"user"}, tenantID, 24*time.Hour)
+
+		// 4. Save new session/refresh token
+		sessions.SessionsMu.Lock()
+		sessions.Sessions[newRefreshToken] = &store.Session{
+			Token:     newRefreshToken,
+			Username:  session.Username,
+			IP:        r.RemoteAddr,
+			UserAgent: r.UserAgent(),
+			CreatedAt: time.Now(),
+			Revoked:   false,
+		}
+		sessions.SessionsMu.Unlock()
+		SaveSessionsToStore()
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(fmt.Appendf(nil, `{"access_token":"%s","refresh_token":"%s","token_type":"Bearer","expires_in":3600}`, newAccessToken, newRefreshToken))
+		return
+	}
+
 	if grantType != "client_credentials" {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -409,9 +473,21 @@ func HandleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sessions.SessionsMu.Lock()
+	sessions.Sessions[token] = &store.Session{
+		Token:     token,
+		Username:  clientID,
+		IP:        r.RemoteAddr,
+		UserAgent: r.UserAgent(),
+		CreatedAt: time.Now(),
+		Revoked:   false,
+	}
+	sessions.SessionsMu.Unlock()
+	SaveSessionsToStore()
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write(fmt.Appendf(nil, `{"access_token":"%s","token_type":"Bearer","expires_in":3600}`, token))
+	w.Write(fmt.Appendf(nil, `{"access_token":"%s","refresh_token":"%s","token_type":"Bearer","expires_in":3600}`, token, token))
 }
 
 func HandleResetRequest(w http.ResponseWriter, r *http.Request) {
@@ -1141,5 +1217,27 @@ func HandleCredentialStuffing(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"stuffing_detected": stuffingDetected,
 		"flagged_ips":        flaggedIPs,
+	})
+}
+
+func RevocationMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader != "" {
+			token, err := ServShared.ExtractTokenFromHeader(authHeader)
+			if err == nil {
+				sessions.SessionsMu.RLock()
+				session, exists := sessions.Sessions[token]
+				if exists && session.Revoked {
+					sessions.SessionsMu.RUnlock()
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusUnauthorized)
+					w.Write([]byte(`{"error":"unauthorized","message":"Session has been revoked.","code":"ERR_SESSION_REVOKED"}`))
+					return
+				}
+				sessions.SessionsMu.RUnlock()
+			}
+		}
+		next.ServeHTTP(w, r)
 	})
 }

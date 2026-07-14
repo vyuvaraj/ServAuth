@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -939,6 +941,206 @@ func TestTimingAttackResistance(t *testing.T) {
 		t.Errorf("potential timing attack: difference between existent and non-existent user login is too large (%v)", diff)
 	}
 }
+
+func TestTokenRefreshRaceCondition(t *testing.T) {
+	setupTest()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth/token", handlers.HandleToken)
+
+	testServer := httptest.NewServer(mux)
+	defer testServer.Close()
+
+	// 1. Get initial access and refresh token
+	resp, err := http.PostForm(testServer.URL+"/oauth/token", url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {"console-client-id"},
+		"client_secret": {"console-secret-key-9876"},
+	})
+	if err != nil {
+		t.Fatalf("failed client credentials token request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var buf bytes.Buffer
+	buf.ReadFrom(resp.Body)
+	t.Logf("Response status: %d, body: %s", resp.StatusCode, buf.String())
+
+	var tokenRes struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	json.Unmarshal(buf.Bytes(), &tokenRes)
+
+	if tokenRes.RefreshToken == "" {
+		t.Fatalf("expected refresh token, got empty")
+	}
+
+	// 2. Perform concurrent refresh requests with same token
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	statusCodes := []int{}
+
+	wg.Add(2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer wg.Done()
+			r, err := http.PostForm(testServer.URL+"/oauth/token", url.Values{
+				"grant_type":    {"refresh_token"},
+				"refresh_token": {tokenRes.RefreshToken},
+			})
+			if err == nil {
+				mu.Lock()
+				statusCodes = append(statusCodes, r.StatusCode)
+				mu.Unlock()
+				r.Body.Close()
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	// One should succeed (200) and the other should be rejected (401 / 400)
+	successCount := 0
+	failCount := 0
+	for _, status := range statusCodes {
+		if status == http.StatusOK {
+			successCount++
+		} else {
+			failCount++
+		}
+	}
+
+	t.Logf("Concurrent refresh results: success=%d, failures=%d", successCount, failCount)
+	if successCount != 1 || failCount != 1 {
+		t.Errorf("expected exactly 1 success and 1 failure, got %d successes and %d failures", successCount, failCount)
+	}
+}
+
+func TestSessionRevocationPropagation(t *testing.T) {
+	setupTest()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/auth/users", handlers.HandleUsers)
+	mux.HandleFunc("/api/auth/sessions/revoke", handlers.HandleSessionsRevoke)
+
+	// Wrap in middleware chain
+	serverHandler := handlers.RevocationMiddleware(mux)
+
+	testServer := httptest.NewServer(serverHandler)
+	defer testServer.Close()
+
+	// 1. Setup session directly
+	token := "revokable-token-xyz"
+	sessions.SessionsMu.Lock()
+	sessions.Sessions[token] = &store.Session{
+		Token:     token,
+		Username:  "sessionuser",
+		CreatedAt: time.Now(),
+		Revoked:   false,
+	}
+	sessions.SessionsMu.Unlock()
+
+	// 2. Access protected endpoint -> should not be revoked
+	req1, _ := http.NewRequest("GET", testServer.URL+"/api/auth/users", nil)
+	req1.Header.Set("Authorization", "Bearer "+token)
+	resp1, err := http.DefaultClient.Do(req1)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp1.Body.Close()
+	if resp1.StatusCode == http.StatusUnauthorized {
+		var errResp map[string]string
+		json.NewDecoder(resp1.Body).Decode(&errResp)
+		if errResp["code"] == "ERR_SESSION_REVOKED" {
+			t.Errorf("expected session not to be revoked yet")
+		}
+	}
+
+	// 3. Revoke session
+	revokeBody := fmt.Sprintf(`{"token":"%s"}`, token)
+	respRev, err := http.Post(testServer.URL+"/api/auth/sessions/revoke", "application/json", bytes.NewReader([]byte(revokeBody)))
+	if err != nil {
+		t.Fatalf("revocation call failed: %v", err)
+	}
+	respRev.Body.Close()
+
+	// 4. Access protected endpoint again -> must fail immediately with StatusUnauthorized
+	req2, _ := http.NewRequest("GET", testServer.URL+"/api/auth/users", nil)
+	req2.Header.Set("Authorization", "Bearer "+token)
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp2.Body.Close()
+
+	if resp2.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected StatusUnauthorized, got %d", resp2.StatusCode)
+	}
+
+	var errResp map[string]string
+	json.NewDecoder(resp2.Body).Decode(&errResp)
+	if errResp["code"] != "ERR_SESSION_REVOKED" {
+		t.Errorf("expected ERR_SESSION_REVOKED error code, got %s", errResp["code"])
+	}
+}
+
+// TestTOTPTimeDrift (D.41) verifies that TOTP codes are accepted within +-1 step (30s) drift,
+// but strictly rejected at +-2 steps drift.
+func TestTOTPTimeDrift(t *testing.T) {
+	secret := "secretkey12345"
+
+	// Helper to generate TOTP code at a specific time offset
+	gen := func(timeOffset int64) string {
+		currentTime := time.Now().Unix() + timeOffset
+		step := int64(30)
+		counter := currentTime / step
+		buf := make([]byte, 8)
+		binary.BigEndian.PutUint64(buf, uint64(counter))
+
+		mac := hmac.New(sha1.New, []byte(secret))
+		mac.Write(buf)
+		hs := mac.Sum(nil)
+
+		offset := hs[len(hs)-1] & 0x0f
+		binCode := int(hs[offset]&0x7f)<<24 |
+			int(hs[offset+1]&0xff)<<16 |
+			int(hs[offset+2]&0xff)<<8 |
+			int(hs[offset+3]&0xff)
+
+		otp := binCode % 1000000
+		return fmt.Sprintf("%06d", otp)
+	}
+
+	// 1. t (0 offset) -> must be valid
+	codeT := gen(0)
+	if !mfa.VerifyTOTP(secret, codeT) {
+		t.Errorf("expected TOTP code at t to be valid")
+	}
+
+	// 2. t-1 (-30s offset) -> must be valid
+	codeTMinus1 := gen(-30)
+	if !mfa.VerifyTOTP(secret, codeTMinus1) {
+		t.Errorf("expected TOTP code at t-1 (drift -30s) to be valid")
+	}
+
+	// 3. t+1 (+30s offset) -> must be valid
+	codeTPlus1 := gen(30)
+	if !mfa.VerifyTOTP(secret, codeTPlus1) {
+		t.Errorf("expected TOTP code at t+1 (drift +30s) to be valid")
+	}
+
+	// 4. t-2 (-60s offset) -> must be REJECTED
+	codeTMinus2 := gen(-60)
+	if mfa.VerifyTOTP(secret, codeTMinus2) {
+		t.Errorf("expected TOTP code at t-2 (drift -60s) to be rejected")
+	}
+
+	// 5. t+2 (+60s offset) -> must be REJECTED
+	codeTPlus2 := gen(60)
+	if mfa.VerifyTOTP(secret, codeTPlus2) {
+		t.Errorf("expected TOTP code at t+2 (drift +60s) to be rejected")
+	}
+}
+
 
 
 
