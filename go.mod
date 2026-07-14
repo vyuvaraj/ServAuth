@@ -7,3 +7,4 @@ require (
 	github.com/vyuvaraj/ServShared v1.0.1
 	golang.org/x/crypto v0.53.0
 )
+replace github.com/vyuvaraj/ServShared => ../ServShared
