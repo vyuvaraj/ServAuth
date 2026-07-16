@@ -75,5 +75,25 @@ scoops:
     description: "Authentication and authorization service from the ServVerse platform"
     license: "Apache-2.0"
 
+
+nfpms:
+  - id: servauth-pkg
+    package_name: servauth
+    builds: [servauth]
+    vendor: Yuvaraj
+    homepage: https://github.com/vyuvaraj/ServAuth
+    maintainer: Yuvaraj <vyuvaraj@github.com>
+    description: Authentication and authorization service from the ServVerse platform
+    license: Apache-2.0
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/local/bin
+    contents:
+      - src: README.md
+        dst: /usr/share/doc/servauth/README.md
+    scripts:
+      postinstall: scripts/postinstall.sh
+      preremove: scripts/preremove.sh
 release:
   mode: replace
