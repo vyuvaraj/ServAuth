@@ -1264,3 +1264,506 @@ func httpError(w http.ResponseWriter, r *http.Request, error string, code int) {
 	}
 	ServShared.WriteJSONError(w, r, error, errorCode, code)
 }
+
+// Helper to issue JWT for a user
+func issueJWTForUser(w http.ResponseWriter, r *http.Request, username string) {
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	secret := os.Getenv("SERV_JWT_SECRET")
+	if secret == "" {
+		secret = "test-secret-key-12345"
+	}
+
+	var token string
+	var err error
+	if os.Getenv("SERV_JWKS_URL") != "" || os.Getenv("SERV_JWT_SIGNING_METHOD") == "RS256" {
+		token, err = ServShared.GenerateUserTokenRS256(JWTRSAPrivateKey, JWTKeyID, username, []string{"user"}, tenantID, 24*time.Hour)
+	} else {
+		token, err = ServShared.GenerateUserToken(secret, username, []string{"user"}, tenantID, 24*time.Hour)
+	}
+	if err != nil {
+		httpError(w, r, "Token generation failed", http.StatusInternalServerError)
+		return
+	}
+
+	// Create session
+	sessions.SessionsMu.Lock()
+	sessions.Sessions[token] = &store.Session{
+		Token:     token,
+		Username:  username,
+		IP:        r.RemoteAddr,
+		UserAgent: r.UserAgent(),
+		CreatedAt: time.Now(),
+		Revoked:   false,
+	}
+	sessions.SessionsMu.Unlock()
+	SaveSessionsToStore()
+
+	_ = ServShared.EmitAuditEvent("ServAuth", "LOGIN_SUCCESS", username, map[string]interface{}{"ip": r.RemoteAddr, "tenant": tenantID})
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(fmt.Sprintf(`{"token":"%s","username":"%s"}`, token, username)))
+}
+
+// Magic Link State & Handlers
+var (
+	magicTokens   = make(map[string]string) // token -> username
+	magicTokensMu sync.Mutex
+)
+
+func getUserByEmail(email string) (string, bool) {
+	UsersMu.RLock()
+	defer UsersMu.RUnlock()
+	for _, u := range Users {
+		if u.Email == email {
+			return u.Username, true
+		}
+	}
+	return "", false
+}
+
+type MagicLinkRequest struct {
+	Email string `json:"email"`
+}
+
+func (r *MagicLinkRequest) Validate() error {
+	return nil
+}
+
+func HandleMagicLinkRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpError(w, r, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req MagicLinkRequest
+	if !ServShared.DecodeAndValidateJSON(w, r, &req) {
+		return
+	}
+	if req.Email == "" {
+		httpError(w, r, "Email is required", http.StatusBadRequest)
+		return
+	}
+
+	username, found := getUserByEmail(req.Email)
+	if !found {
+		httpError(w, r, "User not found", http.StatusNotFound)
+		return
+	}
+
+	// Generate a secure token
+	tokenBytes := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, tokenBytes); err != nil {
+		httpError(w, r, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	token := hex.EncodeToString(tokenBytes)
+
+	magicTokensMu.Lock()
+	magicTokens[token] = username
+	magicTokensMu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(fmt.Sprintf(`{"status":"success","token":"%s"}`, token)))
+}
+
+func HandleMagicLinkVerify(w http.ResponseWriter, r *http.Request) {
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		var req struct {
+			Token string `json:"token"`
+		}
+		if json.NewDecoder(r.Body).Decode(&req) == nil {
+			token = req.Token
+		}
+	}
+	if token == "" {
+		httpError(w, r, "Token is required", http.StatusBadRequest)
+		return
+	}
+
+	magicTokensMu.Lock()
+	username, ok := magicTokens[token]
+	if ok {
+		delete(magicTokens, token)
+	}
+	magicTokensMu.Unlock()
+
+	if !ok {
+		httpError(w, r, "Invalid or expired token", http.StatusUnauthorized)
+		return
+	}
+
+	issueJWTForUser(w, r, username)
+}
+
+// Passkeys (Simulated WebAuthn) State & Handlers
+var (
+	passkeyChallenges   = make(map[string]string) // username -> challenge
+	passkeyChallengesMu sync.Mutex
+)
+
+func HandlePasskeyRegisterChallenge(w http.ResponseWriter, r *http.Request) {
+	claims := ServShared.GetClaims(r)
+	if claims == nil {
+		httpError(w, r, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	challengeBytes := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, challengeBytes); err != nil {
+		httpError(w, r, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	challenge := base64.RawURLEncoding.EncodeToString(challengeBytes)
+
+	passkeyChallengesMu.Lock()
+	passkeyChallenges[claims.Username] = challenge
+	passkeyChallengesMu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(fmt.Sprintf(`{"challenge":"%s"}`, challenge)))
+}
+
+type PasskeyRegisterVerifyRequest struct {
+	Challenge    string `json:"challenge"`
+	CredentialID string `json:"credential_id"`
+	PublicKey    string `json:"public_key"`
+}
+
+func (r *PasskeyRegisterVerifyRequest) Validate() error {
+	return nil
+}
+
+func HandlePasskeyRegisterVerify(w http.ResponseWriter, r *http.Request) {
+	claims := ServShared.GetClaims(r)
+	if claims == nil {
+		httpError(w, r, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req PasskeyRegisterVerifyRequest
+	if !ServShared.DecodeAndValidateJSON(w, r, &req) {
+		return
+	}
+
+	passkeyChallengesMu.Lock()
+	savedChallenge, found := passkeyChallenges[claims.Username]
+	if found {
+		delete(passkeyChallenges, claims.Username)
+	}
+	passkeyChallengesMu.Unlock()
+
+	if !found || savedChallenge != req.Challenge {
+		httpError(w, r, "Invalid challenge", http.StatusBadRequest)
+		return
+	}
+
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	userKey := tenantID + ":" + claims.Username
+
+	UsersMu.Lock()
+	user, exists := Users[userKey]
+	if !exists {
+		UsersMu.Unlock()
+		httpError(w, r, "User not found", http.StatusNotFound)
+		return
+	}
+	user.PasskeyID = req.CredentialID
+	user.PasskeyPublicKey = req.PublicKey
+	Users[userKey] = user
+	UsersMu.Unlock()
+
+	SaveUsersToStore()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"success"}`))
+}
+
+type PasskeyLoginChallengeRequest struct {
+	Username string `json:"username"`
+}
+
+func (r *PasskeyLoginChallengeRequest) Validate() error {
+	return nil
+}
+
+func HandlePasskeyLoginChallenge(w http.ResponseWriter, r *http.Request) {
+	var req PasskeyLoginChallengeRequest
+	if !ServShared.DecodeAndValidateJSON(w, r, &req) {
+		return
+	}
+	if req.Username == "" {
+		httpError(w, r, "Username is required", http.StatusBadRequest)
+		return
+	}
+
+	challengeBytes := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, challengeBytes); err != nil {
+		httpError(w, r, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	challenge := base64.RawURLEncoding.EncodeToString(challengeBytes)
+
+	passkeyChallengesMu.Lock()
+	passkeyChallenges[req.Username] = challenge
+	passkeyChallengesMu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(fmt.Sprintf(`{"challenge":"%s"}`, challenge)))
+}
+
+type PasskeyLoginVerifyRequest struct {
+	Username  string `json:"username"`
+	Challenge string `json:"challenge"`
+	Signature string `json:"signature"`
+}
+
+func (r *PasskeyLoginVerifyRequest) Validate() error {
+	return nil
+}
+
+func HandlePasskeyLoginVerify(w http.ResponseWriter, r *http.Request) {
+	var req PasskeyLoginVerifyRequest
+	if !ServShared.DecodeAndValidateJSON(w, r, &req) {
+		return
+	}
+
+	passkeyChallengesMu.Lock()
+	savedChallenge, found := passkeyChallenges[req.Username]
+	if found {
+		delete(passkeyChallenges, req.Username)
+	}
+	passkeyChallengesMu.Unlock()
+
+	if !found || savedChallenge != req.Challenge {
+		httpError(w, r, "Invalid challenge", http.StatusBadRequest)
+		return
+	}
+
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	userKey := tenantID + ":" + req.Username
+
+	UsersMu.RLock()
+	user, exists := Users[userKey]
+	UsersMu.RUnlock()
+
+	if !exists || user.PasskeyID == "" {
+		httpError(w, r, "Passkey not registered for user", http.StatusNotFound)
+		return
+	}
+
+	if req.Signature == "" {
+		httpError(w, r, "Invalid signature", http.StatusUnauthorized)
+		return
+	}
+
+	issueJWTForUser(w, r, req.Username)
+}
+
+// SCIM 2.0 User structures & handlers
+type SCIMEmail struct {
+	Value   string `json:"value"`
+	Primary bool   `json:"primary"`
+}
+
+type SCIMUser struct {
+	Schemas  []string    `json:"schemas"`
+	ID       string      `json:"id"`
+	UserName string      `json:"userName"`
+	Emails   []SCIMEmail `json:"emails"`
+	Active   bool        `json:"active"`
+}
+
+type SCIMListResponse struct {
+	Schemas      []string   `json:"schemas"`
+	TotalResults int        `json:"totalResults"`
+	StartIndex   int        `json:"startIndex"`
+	ItemsPerPage int        `json:"itemsPerPage"`
+	Resources    []SCIMUser `json:"Resources"`
+}
+
+func HandleSCIMUsers(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	id := strings.TrimPrefix(path, "/scim/v2/Users")
+	id = strings.TrimPrefix(id, "/")
+
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		tenantID = "default"
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		if id != "" {
+			userKey := tenantID + ":" + id
+			UsersMu.RLock()
+			user, exists := Users[userKey]
+			UsersMu.RUnlock()
+
+			if !exists {
+				httpError(w, r, "User not found", http.StatusNotFound)
+				return
+			}
+
+			scimUser := SCIMUser{
+				Schemas:  []string{"urn:ietf:params:scim:schemas:core:2.0:User"},
+				ID:       user.Username,
+				UserName: user.Username,
+				Emails: []SCIMEmail{
+					{Value: user.Email, Primary: true},
+				},
+				Active: true,
+			}
+			w.Header().Set("Content-Type", "application/scim+json")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(scimUser)
+			return
+		}
+
+		UsersMu.RLock()
+		var resources []SCIMUser
+		for _, user := range Users {
+			if user.TenantID == tenantID {
+				resources = append(resources, SCIMUser{
+					Schemas:  []string{"urn:ietf:params:scim:schemas:core:2.0:User"},
+					ID:       user.Username,
+					UserName: user.Username,
+					Emails: []SCIMEmail{
+						{Value: user.Email, Primary: true},
+					},
+					Active: true,
+				})
+			}
+		}
+		UsersMu.RUnlock()
+
+		listResp := SCIMListResponse{
+			Schemas:      []string{"urn:ietf:params:scim:api:messages:2.0:ListResponse"},
+			TotalResults: len(resources),
+			StartIndex:   1,
+			ItemsPerPage: len(resources),
+			Resources:    resources,
+		}
+		w.Header().Set("Content-Type", "application/scim+json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(listResp)
+
+	case http.MethodPost:
+		var scimUser SCIMUser
+		if err := json.NewDecoder(r.Body).Decode(&scimUser); err != nil {
+			httpError(w, r, "Invalid request payload", http.StatusBadRequest)
+			return
+		}
+		if scimUser.UserName == "" {
+			httpError(w, r, "userName is required", http.StatusBadRequest)
+			return
+		}
+		email := ""
+		if len(scimUser.Emails) > 0 {
+			email = scimUser.Emails[0].Value
+		}
+
+		userKey := tenantID + ":" + scimUser.UserName
+
+		UsersMu.Lock()
+		if _, exists := Users[userKey]; exists {
+			UsersMu.Unlock()
+			httpError(w, r, "User already exists", http.StatusConflict)
+			return
+		}
+
+		pwd, _ := HashPassword("SCIMGeneratedPassword123!")
+
+		newUser := store.User{
+			Username:  scimUser.UserName,
+			Email:     email,
+			Password:  pwd,
+			CreatedAt: time.Now(),
+			TenantID:  tenantID,
+		}
+		Users[userKey] = newUser
+		UsersMu.Unlock()
+		SaveUsersToStore()
+
+		scimUser.Schemas = []string{"urn:ietf:params:scim:schemas:core:2.0:User"}
+		scimUser.ID = scimUser.UserName
+		scimUser.Active = true
+
+		w.Header().Set("Content-Type", "application/scim+json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(scimUser)
+
+	case http.MethodPut:
+		if id == "" {
+			httpError(w, r, "id is required for update", http.StatusBadRequest)
+			return
+		}
+		var scimUser SCIMUser
+		if err := json.NewDecoder(r.Body).Decode(&scimUser); err != nil {
+			httpError(w, r, "Invalid request payload", http.StatusBadRequest)
+			return
+		}
+
+		userKey := tenantID + ":" + id
+
+		UsersMu.Lock()
+		user, exists := Users[userKey]
+		if !exists {
+			UsersMu.Unlock()
+			httpError(w, r, "User not found", http.StatusNotFound)
+			return
+		}
+
+		if len(scimUser.Emails) > 0 {
+			user.Email = scimUser.Emails[0].Value
+		}
+		Users[userKey] = user
+		UsersMu.Unlock()
+		SaveUsersToStore()
+
+		scimUser.Schemas = []string{"urn:ietf:params:scim:schemas:core:2.0:User"}
+		scimUser.ID = id
+		scimUser.UserName = id
+		scimUser.Active = true
+
+		w.Header().Set("Content-Type", "application/scim+json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(scimUser)
+
+	case http.MethodDelete:
+		if id == "" {
+			httpError(w, r, "id is required for delete", http.StatusBadRequest)
+			return
+		}
+		userKey := tenantID + ":" + id
+
+		UsersMu.Lock()
+		_, exists := Users[userKey]
+		if !exists {
+			UsersMu.Unlock()
+			httpError(w, r, "User not found", http.StatusNotFound)
+			return
+		}
+		delete(Users, userKey)
+		UsersMu.Unlock()
+		SaveUsersToStore()
+
+		w.WriteHeader(http.StatusNoContent)
+
+	default:
+		httpError(w, r, "Method Not Allowed", http.StatusMethodNotAllowed)
+	}
+}

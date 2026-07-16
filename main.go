@@ -70,6 +70,14 @@ func main() {
 	mux.HandleFunc("/api/auth/secrets/decrypt", handlers.HandleSecretsDecrypt)
 	mux.HandleFunc("/api/auth/risk", handlers.HandleAdaptiveRiskScore)
 	mux.HandleFunc("/api/auth/security/stuffing-detector", handlers.HandleCredentialStuffing)
+	mux.HandleFunc("/api/auth/magic-link/request", handlers.HandleMagicLinkRequest)
+	mux.HandleFunc("/api/auth/magic-link/verify", handlers.HandleMagicLinkVerify)
+	mux.HandleFunc("/api/auth/passkey/register/challenge", handlers.HandlePasskeyRegisterChallenge)
+	mux.HandleFunc("/api/auth/passkey/register/verify", handlers.HandlePasskeyRegisterVerify)
+	mux.HandleFunc("/api/auth/passkey/login/challenge", handlers.HandlePasskeyLoginChallenge)
+	mux.HandleFunc("/api/auth/passkey/login/verify", handlers.HandlePasskeyLoginVerify)
+	mux.HandleFunc("/scim/v2/Users", handlers.HandleSCIMUsers)
+	mux.HandleFunc("/scim/v2/Users/", handlers.HandleSCIMUsers)
 
 	// Wrapper handler for /api/v1/ prefix rewriting (V1.1 support)
 	v1Wrapper := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

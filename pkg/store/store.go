@@ -22,8 +22,10 @@ type User struct {
 	LockedUntil    time.Time `json:"-"`
 	ResetToken     string    `json:"-"`
 	TenantID       string    `json:"tenant_id,omitempty"`
-	MFASecret      string    `json:"-"`
-	MFAEnabled     bool      `json:"mfa_enabled"`
+	MFASecret        string    `json:"-"`
+	MFAEnabled       bool      `json:"mfa_enabled"`
+	PasskeyID        string    `json:"passkey_id,omitempty"`
+	PasskeyPublicKey string    `json:"passkey_public_key,omitempty"`
 }
 
 type ResetRequest struct {

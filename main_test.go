@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/vyuvaraj/ServShared"
+	"github.com/vyuvaraj/ServShared/pkg/middleware"
 	"servauth/pkg/handlers"
 	"servauth/pkg/kms"
 	"servauth/pkg/mfa"
@@ -1140,6 +1142,187 @@ func TestTOTPTimeDrift(t *testing.T) {
 		t.Errorf("expected TOTP code at t+2 (drift +60s) to be rejected")
 	}
 }
+
+func TestMagicLinkFlow(t *testing.T) {
+	setupTest()
+
+	regPayload := `{"username":"magic_user","email":"magic@example.com","password":"Password123!"}`
+	reqReg := httptest.NewRequest("POST", "/api/auth/register", strings.NewReader(regPayload))
+	reqReg.Header.Set("Content-Type", "application/json")
+	wReg := httptest.NewRecorder()
+	handlers.HandleRegister(wReg, reqReg)
+	if wReg.Code != http.StatusOK && wReg.Code != http.StatusCreated {
+		t.Fatalf("failed to register user: %d", wReg.Code)
+	}
+
+	// 1. Request magic link
+	reqLink := httptest.NewRequest("POST", "/api/auth/magic-link/request", strings.NewReader(`{"email":"magic@example.com"}`))
+	reqLink.Header.Set("Content-Type", "application/json")
+	wLink := httptest.NewRecorder()
+	handlers.HandleMagicLinkRequest(wLink, reqLink)
+	if wLink.Code != http.StatusOK {
+		t.Fatalf("magic link request failed: %d", wLink.Code)
+	}
+
+	var linkResp struct {
+		Status string `json:"status"`
+		Token  string `json:"token"`
+	}
+	json.NewDecoder(wLink.Body).Decode(&linkResp)
+
+	if linkResp.Status != "success" || linkResp.Token == "" {
+		t.Fatalf("invalid magic link response: %+v", linkResp)
+	}
+
+	// 2. Verify magic link token
+	reqVerify := httptest.NewRequest("GET", "/api/auth/magic-link/verify?token="+linkResp.Token, nil)
+	wVerify := httptest.NewRecorder()
+	handlers.HandleMagicLinkVerify(wVerify, reqVerify)
+	if wVerify.Code != http.StatusOK {
+		t.Fatalf("magic link verification failed: %d", wVerify.Code)
+	}
+
+	var loginResp struct {
+		Token    string `json:"token"`
+		Username string `json:"username"`
+	}
+	json.NewDecoder(wVerify.Body).Decode(&loginResp)
+
+	if loginResp.Username != "magic_user" || loginResp.Token == "" {
+		t.Errorf("invalid login token response: %+v", loginResp)
+	}
+}
+
+func TestPasskeysFlow(t *testing.T) {
+	setupTest()
+
+	regPayload := `{"username":"passkey_user","email":"pk@example.com","password":"Password123!"}`
+	reqReg := httptest.NewRequest("POST", "/api/auth/register", strings.NewReader(regPayload))
+	reqReg.Header.Set("Content-Type", "application/json")
+	wReg := httptest.NewRecorder()
+	handlers.HandleRegister(wReg, reqReg)
+	if wReg.Code != http.StatusOK && wReg.Code != http.StatusCreated {
+		t.Fatalf("failed to register user: %d", wReg.Code)
+	}
+
+	// 1. Request registration challenge
+	reqChal := httptest.NewRequest("POST", "/api/auth/passkey/register/challenge", nil)
+	ctx := context.WithValue(reqChal.Context(), middleware.ClaimsContextKey, &middleware.Claims{Username: "passkey_user"})
+	reqChal = reqChal.WithContext(ctx)
+	wChal := httptest.NewRecorder()
+	handlers.HandlePasskeyRegisterChallenge(wChal, reqChal)
+	if wChal.Code != http.StatusOK {
+		t.Fatalf("register challenge failed: %d", wChal.Code)
+	}
+
+	var chalResp struct {
+		Challenge string `json:"challenge"`
+	}
+	json.NewDecoder(wChal.Body).Decode(&chalResp)
+
+	// 2. Verify registration assertion
+	verifyPayload := fmt.Sprintf(`{"challenge":%q,"credential_id":"cred-123","public_key":"pubkey-xyz"}`, chalResp.Challenge)
+	reqVer := httptest.NewRequest("POST", "/api/auth/passkey/register/verify", strings.NewReader(verifyPayload))
+	reqVer.Header.Set("Content-Type", "application/json")
+	reqVer = reqVer.WithContext(ctx)
+	wVer := httptest.NewRecorder()
+	handlers.HandlePasskeyRegisterVerify(wVer, reqVer)
+	if wVer.Code != http.StatusOK {
+		t.Fatalf("register verify failed: %d", wVer.Code)
+	}
+
+	// 3. Request login challenge
+	reqLoginChal := httptest.NewRequest("POST", "/api/auth/passkey/login/challenge", strings.NewReader(`{"username":"passkey_user"}`))
+	reqLoginChal.Header.Set("Content-Type", "application/json")
+	wLoginChal := httptest.NewRecorder()
+	handlers.HandlePasskeyLoginChallenge(wLoginChal, reqLoginChal)
+	if wLoginChal.Code != http.StatusOK {
+		t.Fatalf("login challenge failed: %d", wLoginChal.Code)
+	}
+
+	var loginChalResp struct {
+		Challenge string `json:"challenge"`
+	}
+	json.NewDecoder(wLoginChal.Body).Decode(&loginChalResp)
+
+	// 4. Verify login verification (logs in!)
+	loginVerifyPayload := fmt.Sprintf(`{"username":"passkey_user","challenge":%q,"signature":"sig-abc"}`, loginChalResp.Challenge)
+	reqLoginVer := httptest.NewRequest("POST", "/api/auth/passkey/login/verify", strings.NewReader(loginVerifyPayload))
+	reqLoginVer.Header.Set("Content-Type", "application/json")
+	wLoginVer := httptest.NewRecorder()
+	handlers.HandlePasskeyLoginVerify(wLoginVer, reqLoginVer)
+	if wLoginVer.Code != http.StatusOK {
+		t.Fatalf("login verify failed: %d", wLoginVer.Code)
+	}
+
+	var loginResp struct {
+		Token    string `json:"token"`
+		Username string `json:"username"`
+	}
+	json.NewDecoder(wLoginVer.Body).Decode(&loginResp)
+	if loginResp.Username != "passkey_user" || loginResp.Token == "" {
+		t.Errorf("expected successful login with passkey, got %+v", loginResp)
+	}
+}
+
+func TestSCIM20Provisioning(t *testing.T) {
+	setupTest()
+
+	// 1. Create a User via SCIM POST
+	scimPost := `{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"userName":"scim_user","emails":[{"value":"scim@example.com","primary":true}]}`
+	reqPost := httptest.NewRequest("POST", "/scim/v2/Users", strings.NewReader(scimPost))
+	reqPost.Header.Set("Content-Type", "application/json")
+	wPost := httptest.NewRecorder()
+	handlers.HandleSCIMUsers(wPost, reqPost)
+	if wPost.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created from SCIM POST, got %d", wPost.Code)
+	}
+
+	// 2. Get User via SCIM GET
+	reqGet := httptest.NewRequest("GET", "/scim/v2/Users/scim_user", nil)
+	wGet := httptest.NewRecorder()
+	handlers.HandleSCIMUsers(wGet, reqGet)
+	if wGet.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from SCIM GET, got %d", wGet.Code)
+	}
+	var retrievedUser handlers.SCIMUser
+	json.NewDecoder(wGet.Body).Decode(&retrievedUser)
+	if retrievedUser.UserName != "scim_user" || len(retrievedUser.Emails) == 0 || retrievedUser.Emails[0].Value != "scim@example.com" {
+		t.Errorf("retrieved user mismatch: %+v", retrievedUser)
+	}
+
+	// 3. Update User via SCIM PUT
+	scimPut := `{"emails":[{"value":"updated_scim@example.com","primary":true}]}`
+	reqPut := httptest.NewRequest("PUT", "/scim/v2/Users/scim_user", strings.NewReader(scimPut))
+	reqPut.Header.Set("Content-Type", "application/json")
+	wPut := httptest.NewRecorder()
+	handlers.HandleSCIMUsers(wPut, reqPut)
+	if wPut.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from SCIM PUT, got %d", wPut.Code)
+	}
+
+	// 4. List Users via SCIM GET (without ID suffix)
+	reqList := httptest.NewRequest("GET", "/scim/v2/Users", nil)
+	wList := httptest.NewRecorder()
+	handlers.HandleSCIMUsers(wList, reqList)
+	if wList.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from SCIM List, got %d", wList.Code)
+	}
+	var listResp handlers.SCIMListResponse
+	json.NewDecoder(wList.Body).Decode(&listResp)
+	if listResp.TotalResults < 1 {
+		t.Errorf("expected list to return users, got totalResults %d", listResp.TotalResults)
+	}
+
+	// 5. Delete User via SCIM DELETE
+	reqDelete := httptest.NewRequest("DELETE", "/scim/v2/Users/scim_user", nil)
+	wDelete := httptest.NewRecorder()
+	handlers.HandleSCIMUsers(wDelete, reqDelete)
+	if wDelete.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 No Content from SCIM DELETE, got %d", wDelete.Code)
+	}
+}
+
 
 
 
